@@ -1,0 +1,714 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Soil Calibration Bench</title>
+<!--
+Soil calibration bench. One page, no install.
+
+Reads the Feather's CSV stream (ms,tempC,rh,hPa,uvi,soil) straight off USB with
+Web Serial, the Chrome feature that lets a page open a serial port. Same stream
+plot.py and log.py read, so nothing on the board changes.
+
+Run it:
+    cd "13 Weather Module/bench"
+    python3 -m http.server 8077
+    open http://localhost:8077/soil-cal.html   (in Chrome)
+
+Web Serial only works on a secure page, and localhost counts. Only one program
+can hold the port, so close log.py / plot.py / screen first.
+
+The job: turn raw capacitance counts into a calibration curve for the Utah soil,
+and show whether reinsertion scatter is smaller than the gap between water
+levels. If it is not, the sensor cannot tell two dry sites apart.
+-->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  color-scheme: light;
+  --bg:#e6e9ec; --panel:#fcfcfb; --ink:#15191d; --ink2:#52514e; --muted:#8a8984;
+  --line:#d6d9dc; --grid:#e9ebed; --bar:#121417; --bar-ink:#f3f1ea; --bar-ink2:#a9adb3;
+  --accent:#f1b82d; --series:#2a78d6; --fit:#52514e;
+  --good:#1a7f37; --warn:#b26b00; --bad:#c62828;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme: dark;
+    --bg:#101214; --panel:#1a1a19; --ink:#f0efec; --ink2:#c3c2b7; --muted:#8d8c86;
+    --line:#2f3236; --grid:#262729; --bar:#0a0b0c; --series:#3987e5; --fit:#c3c2b7;
+    --good:#4cc26b; --warn:#e3a33a; --bad:#ef6a6a;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --bg:#101214; --panel:#1a1a19; --ink:#f0efec; --ink2:#c3c2b7; --muted:#8d8c86;
+  --line:#2f3236; --grid:#262729; --bar:#0a0b0c; --series:#3987e5; --fit:#c3c2b7;
+  --good:#4cc26b; --warn:#e3a33a; --bad:#ef6a6a;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.4 "Barlow",system-ui,sans-serif}
+button,input,select{font:inherit;color:inherit}
+button{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:6px 12px;cursor:pointer}
+button:hover{border-color:var(--ink2)}
+button.primary{background:var(--accent);border-color:var(--accent);color:#15191d;font-weight:600}
+button:disabled{opacity:.45;cursor:not-allowed}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+input,select{background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:5px 8px}
+input[type=number]{width:80px}
+
+header{background:var(--bar);color:var(--bar-ink);display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px;padding:12px 20px}
+header .title{display:flex;align-items:center;gap:10px;flex-grow:1}
+header .sq{width:14px;height:14px;background:var(--accent)}
+header h1{margin:0;font:600 22px "Barlow Condensed",sans-serif;letter-spacing:.06em;text-transform:uppercase}
+header .sub{color:var(--bar-ink2);font-size:14px}
+header button{background:transparent;color:var(--bar-ink);border-color:#3a3f45}
+header button.primary{background:var(--accent);color:#15191d}
+.link{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--bar-ink2)}
+.dot{width:9px;height:9px;border-radius:50%;background:#6b7076;flex-shrink:0}
+
+main{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(300px,1fr);gap:16px;padding:16px 20px 40px;max-width:1500px;margin:0 auto}
+@media (max-width:900px){main{grid-template-columns:minmax(0,1fr);padding:12px 16px 32px}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:16px;min-width:0}
+.panel h2{margin:0 0 10px;font:600 15px "Barlow Condensed",sans-serif;letter-spacing:.08em;text-transform:uppercase;color:var(--ink2)}
+.span2{grid-column:1/-1}
+.row{display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.small{font-size:13px;color:var(--ink2)}
+.muted{color:var(--muted)}
+
+.big{font:500 52px/1 var(--mono);font-variant-numeric:tabular-nums}
+.big small{font-size:16px;color:var(--ink2);margin-left:6px}
+.tiles{display:flex;gap:20px;flex-wrap:wrap}
+.tile .k{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.tile .v{font:500 20px var(--mono)}
+.status{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border:1px solid var(--line);border-radius:4px;font-weight:600}
+.alert{margin-top:10px;padding:8px 12px;border-left:3px solid var(--warn);background:var(--bg);font-size:14px}
+.alert:empty{display:none}
+
+.rangebar{position:relative;height:14px;background:var(--grid);border-radius:3px;margin:14px 0 4px}
+.rangebar .used{position:absolute;top:0;bottom:0;background:var(--series);opacity:.25;border-radius:3px}
+.rangebar .now{position:absolute;top:-4px;bottom:-4px;width:3px;margin-left:-1px;background:var(--series);border-radius:2px}
+.rangebar-labels{display:flex;justify-content:space-between;font:12px var(--mono);color:var(--muted)}
+
+.chart{position:relative;width:100%}
+.chart canvas{display:block;width:100%}
+.tip{position:absolute;pointer-events:none;background:var(--bar);color:var(--bar-ink);font:12px var(--mono);padding:5px 8px;border-radius:4px;white-space:nowrap;display:none;z-index:2}
+
+form.log{display:grid;grid-template-columns:auto 1fr;gap:8px 12px;align-items:center}
+form.log label{font-size:13px;color:var(--ink2)}
+form.log .full{grid-column:1/-1}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:right;padding:5px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{font-weight:600;color:var(--ink2);font-size:12px;letter-spacing:.04em;text-transform:uppercase}
+th:first-child,td:first-child{text-align:left}
+td.l{text-align:left}
+.scroll{overflow-x:auto}
+.tag{display:inline-flex;align-items:center;gap:6px;font-weight:600}
+.verdict{margin-top:12px;padding:10px 12px;background:var(--bg);border-radius:4px;font-size:14px}
+.sim{border:1px dashed var(--accent)}
+.hidden{display:none !important}
+.seg button{border-radius:0;margin-left:-1px}
+.seg button:first-child{border-radius:4px 0 0 4px;margin-left:0}
+.seg button:last-child{border-radius:0 4px 4px 0}
+.seg button[aria-pressed=true]{background:var(--ink);color:var(--panel);border-color:var(--ink)}
+</style>
+</head>
+<body>
+<header>
+  <div class="title">
+    <div class="sq"></div>
+    <h1>Soil calibration</h1>
+    <span class="sub">STEMMA capacitive sensor &middot; 0x36 &middot; Utah soil</span>
+  </div>
+  <div class="link"><span class="dot" id="linkDot"></span><span id="linkText">Not connected</span></div>
+  <button class="primary" id="btnConnect">Connect board</button>
+  <button id="btnFake">Fake data</button>
+  <button id="btnStop" class="hidden">Disconnect</button>
+</header>
+
+<main>
+  <!-- live reading -->
+  <section class="panel">
+    <h2>Live reading</h2>
+    <div class="row" style="justify-content:space-between;align-items:flex-end">
+      <div>
+        <div class="big"><span id="nowCounts">--</span><small>counts</small></div>
+        <div class="small" id="nowEstimate">&nbsp;</div>
+      </div>
+      <div class="status" id="settle"><span class="dot" id="settleDot"></span><span id="settleText">Waiting for data</span></div>
+      <div class="tiles">
+        <div class="tile"><div class="k">Air temp</div><div class="v" id="nowTemp">--</div></div>
+        <div class="tile"><div class="k">Humidity</div><div class="v" id="nowRh">--</div></div>
+      </div>
+    </div>
+    <div class="rangebar" title="Where the reading sits in the sensor's full range"><div class="used" id="rangeUsed"></div><div class="now" id="rangeNow"></div></div>
+    <div class="rangebar-labels"><span>200 bone dry (datasheet)</span><span id="rangeNote">full sensor range</span><span>2000 soaked</span></div>
+    <div class="alert" id="alert"></div>
+    <div class="chart" id="liveWrap" style="margin-top:14px"><canvas id="live" height="260"></canvas><div class="tip" id="liveTip"></div></div>
+    <div class="row small" style="margin-top:8px">
+      <span>Last 2 minutes. Shaded band is the 10 s that <b>Log point</b> averages.</span>
+      <span>Settled when the last 20 s varies less than
+        <input type="number" id="thr" value="3" min="0.5" step="0.5" style="width:60px"> counts (std) and drifts less than that much.</span>
+    </div>
+  </section>
+
+  <!-- logging -->
+  <section class="panel">
+    <h2>Log a point</h2>
+    <form class="log" id="logForm" onsubmit="return false">
+      <label for="sample">Sample</label><input id="sample" value="Utah soil A">
+      <label for="water">Water %</label><select id="water"></select>
+      <label for="rep">Reinsertion</label><input type="number" id="rep" min="1" value="1">
+      <label for="note">Note</label><input id="note" placeholder="optional, e.g. packed loose">
+      <div class="full row">
+        <button class="primary" id="btnLog" disabled>Log point (10 s average)</button>
+        <span class="small" id="logMsg"></span>
+      </div>
+    </form>
+    <h2 style="margin-top:20px">Mixing table</h2>
+    <div class="row small">
+      <label>Dry soil per portion <input type="number" id="dryMass" value="200" min="1"> g</label>
+    </div>
+    <div class="row small" style="margin-top:6px">
+      <label style="flex-grow:1">Water levels (%) <input id="levels" value="0,2,4,6,8,10,15,20" style="width:100%"></label>
+    </div>
+    <div class="scroll"><table id="mixTable" style="margin-top:8px"></table></div>
+    <p class="small">Water % is by mass: grams of water divided by grams of oven-dried soil. Weigh the water, don't measure it by volume.</p>
+  </section>
+
+  <!-- fake-mode simulator -->
+  <section class="panel span2 sim hidden" id="simPanel">
+    <h2>Simulator (fake data only)</h2>
+    <div class="row">
+      <label>Soil water % in the cup <select id="simWater"></select></label>
+      <button id="btnReinsert">Pull and reinsert sensor</button>
+      <span class="small">Each reinsertion lands on a slightly different reading, the way a real one does. The curve is invented.</span>
+    </div>
+  </section>
+
+  <!-- calibration -->
+  <section class="panel span2">
+    <div class="row" style="justify-content:space-between">
+      <h2 style="margin:0">Calibration curve</h2>
+      <div class="seg" role="group" aria-label="Y axis scale">
+        <button id="yZoom" aria-pressed="true">Zoom to data</button><button id="yFull" aria-pressed="false">Full 200-2000</button>
+      </div>
+    </div>
+    <div class="chart" id="calWrap" style="margin-top:10px"><canvas id="cal" height="300"></canvas><div class="tip" id="calTip"></div></div>
+    <div class="small" id="fitText" style="margin-top:6px">Log points at two or more water levels to fit a curve.</div>
+  </section>
+
+  <section class="panel span2">
+    <h2>Can it tell levels apart?</h2>
+    <div class="scroll"><table id="sepTable"></table></div>
+    <div class="verdict" id="verdict">Needs at least two reinsertions at two neighbouring water levels.</div>
+    <p class="small">Each level's spread is the lowest to highest of its reinsertion averages. Two levels are <b>Clear</b> when those ranges do not overlap. Gap / spread is the gap between level averages over the summed standard deviations; above 2 is comfortable.</p>
+  </section>
+
+  <!-- point table -->
+  <section class="panel span2">
+    <div class="row" style="justify-content:space-between">
+      <h2 style="margin:0">Logged points <span class="muted" id="ptCount"></span></h2>
+      <div class="row">
+        <button id="btnExportPts">Save points CSV</button>
+        <button id="btnExportRaw">Save raw stream CSV</button>
+        <button id="btnClear">Clear session</button>
+      </div>
+    </div>
+    <div class="scroll" style="margin-top:10px"><table id="ptTable"></table></div>
+    <p class="small">Points are kept in this browser between reloads. The raw stream is not, so save it before closing the tab. Save into <span class="mono">13 Weather Module/bench/runs/</span>.</p>
+  </section>
+</main>
+
+<script>
+"use strict";
+// ---------- constants ----------
+const WINDOW_S = 120;      // seconds shown on the live chart
+const SETTLE_S = 20;       // window the settled check looks at
+const AVG_S = 10;          // window Log point averages
+const FULL = [200, 2000];  // datasheet range of the sensor
+const STORE = "soilcal.points.v1";
+
+const $ = id => document.getElementById(id);
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+// ---------- state ----------
+let rows = [];             // every reading this session: {t, clock, ms, tempC, rh, hPa, uvi, soil}
+let t0 = null;             // laptop time of the first reading, so the chart has a clean zero
+let lastRowAt = 0;
+let source = null;         // "serial" | "fake" | null
+let points = loadPoints();
+let yMode = "zoom";
+
+function loadPoints(){
+  try { return JSON.parse(localStorage.getItem(STORE)) || []; } catch(e){ return []; }
+}
+function savePoints(){
+  try { localStorage.setItem(STORE, JSON.stringify(points)); } catch(e){}
+}
+
+// ---------- the stream ----------
+// One CSV row from the board. Header lines and CircuitPython chatter come back null.
+function parseLine(line){
+  const p = line.trim().split(",");
+  if (p.length !== 6) return null;
+  const n = p.map(Number);
+  if (n.some(v => !Number.isFinite(v))) return null;
+  return {ms:n[0], tempC:n[1], rh:n[2], hPa:n[3], uvi:n[4], soil:n[5]};
+}
+
+function ingest(r){
+  const now = Date.now();
+  if (t0 === null) t0 = now;
+  r.t = (now - t0) / 1000;
+  r.clock = new Date(now).toISOString();
+  rows.push(r);
+  lastRowAt = now;
+}
+
+// Web Serial. The Feather's USB serial ignores baud rate, but open() needs one.
+let port = null, reader = null;
+async function connectSerial(){
+  if (!("serial" in navigator)){
+    showAlert("This browser has no Web Serial. Open the page in Chrome or Edge, from http://localhost.");
+    return;
+  }
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({baudRate:115200});
+  } catch(e){
+    if (e.name !== "NotFoundError")   // NotFoundError = the picker was cancelled
+      showAlert("Could not open the port: " + e.message + ". Another program (log.py, plot.py, screen, Mu) may be holding it.");
+    port = null; return;
+  }
+  stopFake();
+  setSource("serial");
+  const dec = new TextDecoderStream();
+  port.readable.pipeTo(dec.writable).catch(()=>{});
+  reader = dec.readable.getReader();
+  let buf = "";
+  try {
+    while (true){
+      const {value, done} = await reader.read();
+      if (done) break;
+      buf += value;
+      const lines = buf.split("\n");
+      buf = lines.pop();                  // keep the half line for next time
+      for (const line of lines){
+        const r = parseLine(line);
+        if (r) ingest(r);
+        else if (line.trim() && !line.startsWith("ms,")) showAlert("Board said: " + line.trim());
+      }
+    }
+  } catch(e){
+    showAlert("Serial read stopped: " + e.message + ". Unplugged?");
+  }
+  await disconnect();
+}
+async function disconnect(){
+  try { if (reader) await reader.cancel(); } catch(e){}
+  try { if (port) await port.close(); } catch(e){}
+  reader = null; port = null;
+  stopFake();
+  setSource(null);
+}
+
+// ---------- fake data ----------
+// An invented curve that rises fast when wet and is flat when dry, which is the
+// shape capacitive sensors usually have. Each insertion gets its own offset.
+let fakeTimer = null, fakeVal = 360, fakeOffset = 0, fakePulledUntil = 0, fakeMs = 0;
+const gauss = () => { let u=0,v=0; while(!u) u=Math.random(); v=Math.random(); return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v); };
+function fakeTarget(){
+  if (Date.now() < fakePulledUntil) return 360;          // in open air while pulled
+  const w = Number($("simWater").value);
+  return 335 + 640 * (1 - Math.exp(-w / 10)) + fakeOffset;
+}
+function startFake(){
+  stopFake();
+  fakeOffset = 6 * gauss();
+  setSource("fake");
+  fakeTimer = setInterval(() => {
+    fakeVal += (fakeTarget() - fakeVal) * 0.18;           // settles over ~10 s
+    fakeMs += 500;
+    ingest({ms:fakeMs, tempC:22.4 + 0.2*Math.sin(fakeMs/40000), rh:40 + 0.8*Math.sin(fakeMs/30000),
+            hPa:991, uvi:0, soil:Math.round(fakeVal + 1.2*gauss())});
+  }, 500);
+}
+function stopFake(){ if (fakeTimer) clearInterval(fakeTimer); fakeTimer = null; }
+
+function setSource(s){
+  source = s;
+  $("btnConnect").classList.toggle("hidden", !!s);
+  $("btnFake").classList.toggle("hidden", !!s);
+  $("btnStop").classList.toggle("hidden", !s);
+  $("simPanel").classList.toggle("hidden", s !== "fake");
+  if (s) showAlert("");
+}
+
+// ---------- maths ----------
+function stats(vals){
+  const n = vals.length;
+  if (!n) return {n:0, mean:NaN, sd:NaN};
+  const mean = vals.reduce((a,b)=>a+b,0)/n;
+  const sd = n > 1 ? Math.sqrt(vals.reduce((a,b)=>a+(b-mean)**2,0)/(n-1)) : 0;
+  return {n, mean, sd};
+}
+// Slope of y against t by least squares, in counts per second.
+function slope(ts, ys){
+  const n = ts.length; if (n < 2) return 0;
+  const mt = ts.reduce((a,b)=>a+b,0)/n, my = ys.reduce((a,b)=>a+b,0)/n;
+  let num=0, den=0;
+  for (let i=0;i<n;i++){ num += (ts[i]-mt)*(ys[i]-my); den += (ts[i]-mt)**2; }
+  return den ? num/den : 0;
+}
+function recent(seconds){
+  if (!rows.length) return [];
+  const tEnd = rows[rows.length-1].t;
+  const out = [];
+  for (let i=rows.length-1; i>=0 && rows[i].t >= tEnd - seconds; i--) if (rows[i].soil >= 0) out.unshift(rows[i]);
+  return out;
+}
+// Settled = small noise and small drift over the last 20 s.
+function settleState(){
+  const w = recent(SETTLE_S);
+  if (w.length < 10 || w[w.length-1].t - w[0].t < SETTLE_S * 0.75) return {state:"wait"};
+  const thr = Number($("thr").value) || 3;
+  const s = stats(w.map(r=>r.soil));
+  const drift = slope(w.map(r=>r.t), w.map(r=>r.soil)) * SETTLE_S;
+  return {state: (s.sd <= thr && Math.abs(drift) <= thr) ? "settled" : "settling", sd:s.sd, drift};
+}
+
+// Solve the normal equations for a polynomial fit. Degree 2 with 3+ levels, else 1.
+function polyfit(xs, ys, deg){
+  const m = deg + 1, A = Array.from({length:m},()=>Array(m+1).fill(0));
+  for (let i=0;i<xs.length;i++){
+    const p = []; for (let k=0;k<m;k++) p.push(xs[i]**k);
+    for (let r=0;r<m;r++){ for (let c=0;c<m;c++) A[r][c] += p[r]*p[c]; A[r][m] += p[r]*ys[i]; }
+  }
+  for (let c=0;c<m;c++){                    // Gaussian elimination with pivoting
+    let piv = c; for (let r=c+1;r<m;r++) if (Math.abs(A[r][c]) > Math.abs(A[piv][c])) piv = r;
+    [A[c], A[piv]] = [A[piv], A[c]];
+    if (Math.abs(A[c][c]) < 1e-12) return null;
+    for (let r=0;r<m;r++) if (r !== c){ const f = A[r][c]/A[c][c]; for (let k=c;k<=m;k++) A[r][k] -= f*A[c][k]; }
+  }
+  return A.map((row,i)=>row[m]/row[i]);
+}
+const polyval = (co, x) => co.reduce((a,c,k)=>a + c*x**k, 0);
+
+function currentFit(){
+  const levels = new Set(points.map(p=>p.water));
+  if (levels.size < 2) return null;
+  const deg = levels.size >= 3 ? 2 : 1;
+  const xs = points.map(p=>p.water), ys = points.map(p=>p.counts);
+  const co = polyfit(xs, ys, deg); if (!co) return null;
+  const my = ys.reduce((a,b)=>a+b,0)/ys.length;
+  const ssr = ys.reduce((a,y,i)=>a+(y-polyval(co,xs[i]))**2,0), sst = ys.reduce((a,y)=>a+(y-my)**2,0);
+  return {co, deg, r2: sst ? 1 - ssr/sst : 1, xmin:Math.min(...xs), xmax:Math.max(...xs)};
+}
+// Read the curve backwards: which water % gives these counts? Only inside the calibrated span.
+function invert(fit, counts){
+  const steps = 400, dx = (fit.xmax - fit.xmin)/steps;
+  let prev = polyval(fit.co, fit.xmin);
+  for (let i=1;i<=steps;i++){
+    const x = fit.xmin + i*dx, y = polyval(fit.co, x);
+    if ((prev - counts)*(y - counts) <= 0 && prev !== y) return x - dx*(y - counts)/(y - prev);
+    prev = y;
+  }
+  return null;
+}
+
+function groupLevels(){
+  const by = new Map();
+  for (const p of points){ if (!by.has(p.water)) by.set(p.water, []); by.get(p.water).push(p.counts); }
+  return [...by.entries()].sort((a,b)=>a[0]-b[0]).map(([w, c]) => {
+    const s = stats(c); return {w, n:s.n, mean:s.mean, sd:s.sd, min:Math.min(...c), max:Math.max(...c)};
+  });
+}
+
+// ---------- canvas helpers ----------
+function prep(canvas){
+  // Remember the CSS height once: scaling for a retina screen rewrites the height attribute.
+  if (!canvas.dataset.h) canvas.dataset.h = canvas.getAttribute("height");
+  const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = Number(canvas.dataset.h);
+  if (canvas.width !== Math.round(w*dpr)) { canvas.width = Math.round(w*dpr); canvas.height = Math.round(h*dpr); canvas.style.height = h+"px"; }
+  const g = canvas.getContext("2d"); g.setTransform(dpr,0,0,dpr,0,0); g.clearRect(0,0,w,h);
+  return {g, w, h};
+}
+function niceTicks(lo, hi, n){
+  const span = hi - lo || 1, step0 = span / n, mag = 10 ** Math.floor(Math.log10(step0));
+  const step = [1,2,5,10].map(k=>k*mag).find(s=>s >= step0);
+  const out = []; for (let v = Math.ceil(lo/step)*step; v <= hi + 1e-9; v += step) out.push(+v.toFixed(6));
+  return out;
+}
+function axes(g, box, xT, yT, sx, sy, xLab, yLab){
+  g.font = "12px " + css("--mono"); g.fillStyle = css("--muted"); g.strokeStyle = css("--grid"); g.lineWidth = 1;
+  g.textAlign = "right"; g.textBaseline = "middle";
+  for (const v of yT){ const y = Math.round(sy(v))+.5; g.beginPath(); g.moveTo(box.l,y); g.lineTo(box.r,y); g.stroke(); g.fillText(v, box.l-6, y); }
+  g.textAlign = "center"; g.textBaseline = "top";
+  for (const v of xT) g.fillText(v, sx(v), box.b+6);
+  g.fillStyle = css("--ink2"); g.font = "12px " + css("--mono");
+  g.fillText(xLab, (box.l+box.r)/2, box.b+22);
+  g.save(); g.translate(14, (box.t+box.b)/2); g.rotate(-Math.PI/2); g.fillText(yLab, 0, -6); g.restore();
+}
+
+// ---------- live chart ----------
+let liveHover = null;
+function drawLive(){
+  const {g, w, h} = prep($("live"));
+  const box = {l:58, r:w-12, t:10, b:h-40};
+  const data = recent(WINDOW_S);
+  if (!data.length){ g.fillStyle = css("--muted"); g.font = "14px system-ui"; g.textAlign="center"; g.fillText("Connect the board or start fake data", w/2, h/2); return; }
+  const tEnd = data[data.length-1].t, tStart = Math.max(0, tEnd - WINDOW_S);
+  let lo = Math.min(...data.map(r=>r.soil)), hi = Math.max(...data.map(r=>r.soil));
+  if (hi - lo < 40){ const mid = (hi+lo)/2; lo = mid-20; hi = mid+20; }  // never zoom tighter than 40 counts
+  const pad = (hi-lo)*0.08; lo -= pad; hi += pad;
+  const sx = t => box.l + (t - tStart)/(Math.max(WINDOW_S*0.25, tEnd - tStart)) * (box.r - box.l);
+  const sy = v => box.b - (v - lo)/(hi - lo) * (box.b - box.t);
+  // the 10 s Log point averages
+  g.fillStyle = css("--series"); g.globalAlpha = .10;
+  g.fillRect(sx(Math.max(tStart, tEnd-AVG_S)), box.t, sx(tEnd) - sx(Math.max(tStart, tEnd-AVG_S)), box.b-box.t);
+  g.globalAlpha = 1;
+  const xT = niceTicks(tStart, tEnd, 6).map(v=>v);
+  axes(g, box, xT, niceTicks(lo, hi, 5), sx, sy, "seconds since start", "counts");
+  g.strokeStyle = css("--series"); g.lineWidth = 2; g.lineJoin = "round"; g.beginPath();
+  data.forEach((r,i)=>{ const x=sx(r.t), y=sy(r.soil); i ? g.lineTo(x,y) : g.moveTo(x,y); }); g.stroke();
+  if (liveHover !== null){
+    const t = tStart + (liveHover - box.l)/(box.r-box.l) * Math.max(WINDOW_S*0.25, tEnd - tStart);
+    let best = data[0]; for (const r of data) if (Math.abs(r.t - t) < Math.abs(best.t - t)) best = r;
+    const x = sx(best.t), y = sy(best.soil);
+    g.strokeStyle = css("--muted"); g.lineWidth = 1; g.beginPath(); g.moveTo(x, box.t); g.lineTo(x, box.b); g.stroke();
+    g.fillStyle = css("--panel"); g.beginPath(); g.arc(x,y,6,0,7); g.fill();
+    g.fillStyle = css("--series"); g.beginPath(); g.arc(x,y,4,0,7); g.fill();
+    const tip = $("liveTip"); tip.style.display = "block";
+    tip.textContent = best.t.toFixed(1) + " s   " + best.soil + " counts   " + best.tempC.toFixed(1) + " C";
+    tip.style.left = Math.min(x + 12, w - tip.offsetWidth - 4) + "px"; tip.style.top = Math.max(0, y - 34) + "px";
+  } else $("liveTip").style.display = "none";
+}
+
+// ---------- calibration chart ----------
+let calHover = null, calMarks = [];
+function drawCal(){
+  const {g, w, h} = prep($("cal"));
+  const box = {l:58, r:w-14, t:12, b:h-40};
+  calMarks = [];
+  const levels = groupLevels(), fit = currentFit();
+  const lv = parseLevels();
+  const xmax = Math.max(1, ...lv, ...points.map(p=>p.water));
+  let lo, hi;
+  if (yMode === "full" || !points.length){ [lo, hi] = FULL; }
+  else {
+    lo = Math.min(...points.map(p=>p.counts)); hi = Math.max(...points.map(p=>p.counts));
+    if (hi - lo < 40){ const m=(hi+lo)/2; lo=m-20; hi=m+20; }
+    const pad=(hi-lo)*.1; lo-=pad; hi+=pad;
+  }
+  // Pad the x domain a little so dots at 0% and the top level are not cut in half.
+  const x0 = -xmax*0.03, x1 = xmax*1.03;
+  const sx = x => box.l + (x - x0)/(x1 - x0)*(box.r-box.l), sy = v => box.b - (v-lo)/(hi-lo)*(box.b-box.t);
+  axes(g, box, niceTicks(0, xmax, 8), niceTicks(lo, hi, 5), sx, sy, "water content, % by mass", "counts");
+  if (!points.length){ g.fillStyle = css("--muted"); g.font = "14px system-ui"; g.textAlign="center"; g.fillText("No points logged yet", (box.l+box.r)/2, (box.t+box.b)/2); return; }
+  g.save(); g.beginPath(); g.rect(box.l, box.t, box.r-box.l, box.b-box.t); g.clip();
+  if (fit){
+    g.strokeStyle = css("--fit"); g.lineWidth = 2; g.setLineDash([6,4]); g.beginPath();
+    for (let i=0;i<=100;i++){ const x = fit.xmin + (fit.xmax-fit.xmin)*i/100, X=sx(x), Y=sy(polyval(fit.co,x)); i?g.lineTo(X,Y):g.moveTo(X,Y); }
+    g.stroke(); g.setLineDash([]);
+  }
+  // per-level range bar: lowest to highest reinsertion
+  g.strokeStyle = css("--series"); g.lineWidth = 2;
+  for (const L of levels){ if (L.n < 2) continue; const x = sx(L.w); g.beginPath(); g.moveTo(x, sy(L.min)); g.lineTo(x, sy(L.max)); g.moveTo(x-6, sy(L.min)); g.lineTo(x+6, sy(L.min)); g.moveTo(x-6, sy(L.max)); g.lineTo(x+6, sy(L.max)); g.stroke(); }
+  for (const p of points){
+    const x = sx(p.water), y = sy(p.counts);
+    g.fillStyle = css("--panel"); g.beginPath(); g.arc(x,y,6,0,7); g.fill();   // surface ring so stacked dots stay countable
+    g.fillStyle = css("--series"); g.beginPath(); g.arc(x,y,4.5,0,7); g.fill();
+    calMarks.push({x, y, p});
+  }
+  g.restore();
+  const tip = $("calTip");
+  if (calHover){
+    let best = null, bd = 14;
+    for (const m of calMarks){ const d = Math.hypot(m.x-calHover.x, m.y-calHover.y); if (d < bd){ bd = d; best = m; } }
+    if (best){
+      tip.style.display = "block";
+      tip.textContent = best.p.water + "% rep " + best.p.rep + ": " + best.p.counts.toFixed(1) + " counts (sd " + best.p.sd.toFixed(1) + ")";
+      tip.style.left = Math.min(best.x + 12, w - tip.offsetWidth - 4) + "px"; tip.style.top = Math.max(0, best.y - 34) + "px";
+    } else tip.style.display = "none";
+  } else tip.style.display = "none";
+}
+
+// ---------- panels ----------
+function parseLevels(){
+  return $("levels").value.split(/[,\s]+/).map(Number).filter(v => Number.isFinite(v) && v >= 0);
+}
+function renderLevels(){
+  const lv = parseLevels(), dry = Number($("dryMass").value) || 0;
+  for (const id of ["water", "simWater"]){
+    const sel = $(id), keep = sel.value;
+    sel.innerHTML = lv.map(v=>`<option value="${v}">${v}%</option>`).join("");
+    if (keep !== "" && lv.includes(Number(keep))) sel.value = keep;
+  }
+  $("mixTable").innerHTML = "<tr><th>Water %</th>" + lv.map(v=>`<td>${v}</td>`).join("") + "</tr>" +
+    "<tr><th>Add water, g</th>" + lv.map(v=>`<td class="mono">${(dry*v/100).toFixed(1)}</td>`).join("") + "</tr>";
+  suggestRep();
+}
+function suggestRep(){
+  const w = Number($("water").value);
+  $("rep").value = points.filter(p => p.water === w && p.sample === $("sample").value).length + 1;
+}
+
+function logPoint(){
+  const w = recent(AVG_S);
+  if (w.length < 8){ $("logMsg").textContent = "Not enough readings in the last 10 s."; return; }
+  const st = settleState(), s = stats(w.map(r=>r.soil));
+  points.push({
+    id: Date.now(), time: new Date().toISOString(), sample: $("sample").value.trim(),
+    water: Number($("water").value), rep: Number($("rep").value),
+    counts: s.mean, sd: s.sd, n: s.n,
+    tempC: stats(w.map(r=>r.tempC)).mean, rh: stats(w.map(r=>r.rh)).mean,
+    settled: st.state === "settled", note: $("note").value.trim(),
+  });
+  savePoints();
+  $("logMsg").textContent = `Logged ${s.mean.toFixed(1)} counts at ${$("water").value}%` + (st.state === "settled" ? "." : ", flagged not settled.");
+  $("note").value = "";
+  suggestRep(); renderPoints();
+}
+
+function renderPoints(){
+  $("ptCount").textContent = points.length ? "(" + points.length + ")" : "";
+  $("ptTable").innerHTML = "<tr><th>Time</th><th>Sample</th><th>Water %</th><th>Rep</th><th>Counts</th><th>SD</th><th>n</th><th>Temp C</th><th>RH %</th><th>Settled</th><th>Note</th><th></th></tr>" +
+    points.map(p => `<tr><td class="mono">${p.time.slice(11,19)}</td><td class="l">${esc(p.sample)}</td><td>${p.water}</td><td>${p.rep}</td>
+      <td class="mono">${p.counts.toFixed(1)}</td><td class="mono">${p.sd.toFixed(1)}</td><td>${p.n}</td>
+      <td class="mono">${p.tempC.toFixed(1)}</td><td class="mono">${p.rh.toFixed(0)}</td>
+      <td>${p.settled ? "yes" : '<span style="color:var(--warn);font-weight:600">no</span>'}</td><td class="l">${esc(p.note)}</td>
+      <td><button data-del="${p.id}">Delete</button></td></tr>`).join("");
+  renderSep(); drawCal();
+}
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function renderSep(){
+  const L = groupLevels();
+  const fit = currentFit();
+  $("fitText").innerHTML = fit
+    ? `Fit (${fit.deg === 2 ? "quadratic" : "straight line"}): counts = ${fit.co.map((c,k)=>c.toFixed(k?2:1) + (k? (k===1?" w":" w&sup2;") : "")).join(" + ").replace(/\+ -/g,"- ")} &nbsp; R&sup2; = ${fit.r2.toFixed(3)}. Dashed line. Bars span each level's reinsertions.`
+    : "Log points at two or more water levels to fit a curve.";
+  if (!L.length){ $("sepTable").innerHTML = ""; $("verdict").textContent = "Needs at least two reinsertions at two neighbouring water levels."; return; }
+  let html = "<tr><th>Levels</th><th>Gap</th><th>Counts per %</th><th>Gap / spread</th><th>Call</th></tr>";
+  const calls = [];
+  for (let i=0;i<L.length-1;i++){
+    const a = L[i], b = L[i+1], gap = b.mean - a.mean;
+    let call, color;
+    if (a.n < 2 || b.n < 2){ call = "Need 2+ reps"; color = "--muted"; }
+    else {
+      const overlap = Math.max(a.min, b.min) <= Math.min(a.max, b.max);
+      const ratio = Math.abs(gap) / ((a.sd + b.sd) || 1e-9);
+      call = overlap ? "Overlap" : (ratio >= 2 ? "Clear" : "Marginal"); color = overlap ? "--bad" : (ratio >= 2 ? "--good" : "--warn");
+      calls.push({a, b, call});
+    }
+    const ratio = (a.n>1 && b.n>1) ? (Math.abs(gap)/((a.sd+b.sd)||1e-9)).toFixed(1) : "--";
+    html += `<tr><td>${a.w}% to ${b.w}%</td><td class="mono">${gap.toFixed(1)}</td><td class="mono">${(gap/(b.w-a.w)).toFixed(1)}</td><td class="mono">${ratio}</td>
+      <td><span class="tag"><span class="dot" style="background:var(${color})"></span>${call}</span></td></tr>`;
+  }
+  html += "<tr><th>Level</th><th>Reps</th><th>Mean</th><th>SD</th><th>Low to high</th></tr>" +
+    L.map(l => `<tr><td>${l.w}%</td><td>${l.n}</td><td class="mono">${l.mean.toFixed(1)}</td><td class="mono">${l.n>1?l.sd.toFixed(1):"--"}</td><td class="mono">${l.min.toFixed(0)} to ${l.max.toFixed(0)}</td></tr>`).join("");
+  $("sepTable").innerHTML = html;
+  if (!calls.length){ $("verdict").textContent = "Needs at least two reinsertions at two neighbouring water levels."; return; }
+  const bad = calls.filter(c => c.call !== "Clear");
+  $("verdict").innerHTML = !bad.length
+    ? `Every neighbouring pair tested so far is clear. Finest step resolved: <b>${Math.min(...calls.map(c=>c.b.w-c.a.w))}%</b> water.`
+    : `Can't separate: <b>${bad.map(c=>`${c.a.w}% vs ${c.b.w}% (${c.call.toLowerCase()})`).join(", ")}</b>. Reinsertion scatter is as big as the moisture change there.`;
+}
+
+// ---------- live readout, ticked ----------
+function tick(){
+  const last = rows[rows.length-1];
+  const age = (Date.now() - lastRowAt)/1000;
+  const live = source && last && age < 3;
+  $("linkDot").style.background = live ? css("--good") : (source ? css("--warn") : "#6b7076");
+  $("linkText").textContent = !source ? "Not connected" : !last ? "Waiting for first line" :
+    `${source === "fake" ? "Fake data" : "Board"} · ${rows.length} lines · last ${age.toFixed(1)} s ago`;
+  if (last){
+    const soilOk = last.soil >= 0;
+    $("nowCounts").textContent = soilOk ? last.soil : "--";
+    $("nowTemp").textContent = last.tempC.toFixed(1) + " C";
+    $("nowRh").textContent = last.rh.toFixed(0) + " %";
+    if (!soilOk) showAlert("Soil column reads -1: the board can't see the sensor at 0x36. Check the PH-to-SH cable at the end of the chain.");
+    const pct = v => Math.max(0, Math.min(100, (v - FULL[0])/(FULL[1]-FULL[0])*100));
+    const all = rows.filter(r=>r.soil>=0).map(r=>r.soil);
+    if (all.length){
+      const mn = Math.min(...all.slice(-5000)), mx = Math.max(...all.slice(-5000));
+      $("rangeUsed").style.left = pct(mn)+"%"; $("rangeUsed").style.width = Math.max(.4, pct(mx)-pct(mn))+"%";
+      $("rangeNote").textContent = `this session used ${mn} to ${mx}, ${((mx-mn)/(FULL[1]-FULL[0])*100).toFixed(1)}% of the range`;
+    }
+    if (soilOk) $("rangeNow").style.left = pct(last.soil)+"%";
+    const fit = currentFit(), est = fit && soilOk ? invert(fit, recent(AVG_S).reduce((a,r,i,arr)=>a+r.soil/arr.length,0)) : null;
+    $("nowEstimate").innerHTML = !fit ? "Water % estimate appears once the curve has two levels."
+      : est === null ? "Outside the calibrated range, no water % estimate." : `About <b>${est.toFixed(1)}%</b> water by the current curve (10 s average)`;
+  }
+  const st = settleState();
+  const col = st.state === "settled" ? "--good" : st.state === "settling" ? "--warn" : "--muted";
+  $("settleDot").style.background = css(col);
+  $("settleText").textContent = st.state === "settled" ? `Settled · sd ${st.sd.toFixed(1)}`
+    : st.state === "settling" ? `Settling · sd ${st.sd.toFixed(1)}, drift ${st.drift>0?"+":""}${st.drift.toFixed(1)} / 20 s` : "Waiting for 20 s of data";
+  $("btnLog").disabled = recent(AVG_S).length < 8;
+  drawLive();
+}
+
+function showAlert(msg){ $("alert").textContent = msg; }
+
+// ---------- saving ----------
+async function saveCsv(name, text){
+  if (window.showSaveFilePicker){
+    try {
+      const h = await showSaveFilePicker({suggestedName:name, types:[{description:"CSV", accept:{"text/csv":[".csv"]}}]});
+      const wr = await h.createWritable(); await wr.write(text); await wr.close(); return;
+    } catch(e){ if (e.name === "AbortError") return; }
+  }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], {type:"text/csv"})); a.download = name; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+}
+const today = () => new Date().toLocaleDateString("en-CA");   // YYYY-MM-DD
+const q = s => /[",\n]/.test(s) ? `"${String(s).replace(/"/g,'""')}"` : s;
+
+// ---------- wiring ----------
+$("btnConnect").onclick = connectSerial;
+$("btnFake").onclick = startFake;
+$("btnStop").onclick = disconnect;
+$("btnLog").onclick = logPoint;
+$("btnReinsert").onclick = () => { fakePulledUntil = Date.now() + 3000; fakeOffset = 6 * gauss(); };
+$("simWater").onchange = () => { fakePulledUntil = Date.now() + 3000; fakeOffset = 6 * gauss(); };
+$("water").onchange = suggestRep;
+$("sample").oninput = suggestRep;
+$("levels").oninput = renderLevels;
+$("dryMass").oninput = renderLevels;
+$("yZoom").onclick = () => { yMode = "zoom"; $("yZoom").setAttribute("aria-pressed","true"); $("yFull").setAttribute("aria-pressed","false"); drawCal(); };
+$("yFull").onclick = () => { yMode = "full"; $("yFull").setAttribute("aria-pressed","true"); $("yZoom").setAttribute("aria-pressed","false"); drawCal(); };
+$("ptTable").onclick = e => {
+  const id = e.target.dataset && e.target.dataset.del; if (!id) return;
+  points = points.filter(p => String(p.id) !== id); savePoints(); suggestRep(); renderPoints();
+};
+$("btnClear").onclick = () => {
+  if (!confirm("Delete all logged points and the raw stream from this session? Save first if you want them.")) return;
+  points = []; rows = []; t0 = null; savePoints(); suggestRep(); renderPoints();
+};
+$("btnExportPts").onclick = () => saveCsv(`${today()} soil cal points.csv`,
+  "time,sample,water_pct,rep,counts_mean,counts_sd,n,tempC,rh,settled,note\n" +
+  points.map(p => [p.time, q(p.sample), p.water, p.rep, p.counts.toFixed(2), p.sd.toFixed(2), p.n, p.tempC.toFixed(2), p.rh.toFixed(1), p.settled, q(p.note)].join(",")).join("\n") + "\n");
+$("btnExportRaw").onclick = () => saveCsv(`${today()} soil cal raw.csv`,
+  "clock,t_s,ms,tempC,rh,hPa,uvi,soil\n" +
+  rows.map(r => [r.clock, r.t.toFixed(2), r.ms, r.tempC, r.rh, r.hPa, r.uvi, r.soil].join(",")).join("\n") + "\n");
+window.addEventListener("beforeunload", e => { if (rows.length > 20) { e.preventDefault(); e.returnValue = ""; } });
+
+const liveC = $("live"), calC = $("cal");
+liveC.onmousemove = e => { liveHover = e.offsetX; drawLive(); };
+liveC.onmouseleave = () => { liveHover = null; drawLive(); };
+calC.onmousemove = e => { calHover = {x:e.offsetX, y:e.offsetY}; drawCal(); };
+calC.onmouseleave = () => { calHover = null; drawCal(); };
+new ResizeObserver(() => { drawLive(); drawCal(); }).observe(document.querySelector("main"));
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { drawLive(); drawCal(); });
+
+renderLevels(); renderPoints();
+setInterval(tick, 250); tick();
+</script>
+</body>
+</html>

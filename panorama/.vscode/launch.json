@@ -1,0 +1,16 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            // F5 runs the stitcher with the debugger attached (pause on any line, inspect variables)
+            "name": "Stitch panorama",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/panorama.py",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "args": ["--show"],
+            "console": "integratedTerminal"
+        }
+    ]
+}

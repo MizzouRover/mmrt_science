@@ -1,0 +1,2030 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weather Module Lab</title>
+<!--
+Weather module lab guide. One page, no install. Built on soil-cal.html.
+
+Reads the Feather's CSV stream (ms,tempC,rh,hPa,uvi,soil) straight off USB with
+Web Serial, same as soil-cal.html, plot.py and log.py. Nothing on the board changes.
+
+Run it:
+    double-click start-lab.command      (starts the server, opens Chrome)
+or:
+    cd "13 Weather Module/bench"
+    python3 -m http.server 8077
+    open -a "Google Chrome" http://localhost:8077/weather-lab.html
+
+Reference weather comes from two free sources with no key:
+  - NWS station observation (default KCOU, Columbia Regional Airport): measured
+    temperature, humidity, sea-level pressure.
+  - Open-Meteo current conditions: UV index (NWS stations do not report UV),
+    cloud cover, day/night, sunrise and sunset.
+
+Each test is a card: procedure on the left, live pass/fail and graphs on the
+right. Results survive a reload; the raw session stream does not, so save it.
+-->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  color-scheme: light;
+  --bg:#e6e9ec; --panel:#fcfcfb; --ink:#15191d; --ink2:#52514e; --muted:#8a8984;
+  --line:#d6d9dc; --grid:#e9ebed; --bar:#121417; --bar-ink:#f3f1ea; --bar-ink2:#a9adb3;
+  --accent:#f1b82d; --s1:#2a78d6; --s2:#eb6834; --fit:#52514e;
+  --good:#1a7f37; --warn:#b26b00; --bad:#c62828;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme: dark;
+    --bg:#101214; --panel:#1a1a19; --ink:#f0efec; --ink2:#c3c2b7; --muted:#8d8c86;
+    --line:#2f3236; --grid:#262729; --bar:#0a0b0c; --s1:#3987e5; --s2:#d95926; --fit:#c3c2b7;
+    --good:#4cc26b; --warn:#e3a33a; --bad:#ef6a6a;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --bg:#101214; --panel:#1a1a19; --ink:#f0efec; --ink2:#c3c2b7; --muted:#8d8c86;
+  --line:#2f3236; --grid:#262729; --bar:#0a0b0c; --s1:#3987e5; --s2:#d95926; --fit:#c3c2b7;
+  --good:#4cc26b; --warn:#e3a33a; --bad:#ef6a6a;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 "Barlow",system-ui,sans-serif}
+button,input,select,textarea{font:inherit;color:inherit}
+button{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:6px 12px;cursor:pointer}
+button:hover{border-color:var(--ink2)}
+button.primary{background:var(--accent);border-color:var(--accent);color:#15191d;font-weight:600}
+button:disabled{opacity:.4;cursor:not-allowed}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+input,select,textarea{background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:5px 8px}
+textarea{width:100%;resize:vertical}
+input[type=number]{width:90px}
+code,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+code{font-size:13px;background:var(--bg);padding:1px 5px;border-radius:3px}
+
+header{background:var(--bar);color:var(--bar-ink);display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px;padding:12px 20px;position:sticky;top:0;z-index:5}
+header .title{display:flex;align-items:center;gap:10px;flex-grow:1}
+header .sq{width:14px;height:14px;background:var(--accent)}
+header h1{margin:0;font:600 22px "Barlow Condensed",sans-serif;letter-spacing:.06em;text-transform:uppercase}
+header .sub{color:var(--bar-ink2);font-size:14px}
+header button{background:transparent;color:var(--bar-ink);border-color:#3a3f45}
+header button.primary{background:var(--accent);color:#15191d}
+.link{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--bar-ink2)}
+.dot{width:9px;height:9px;border-radius:50%;background:#6b7076;flex-shrink:0;display:inline-block}
+
+main{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;padding:16px 20px 60px;max-width:1500px;margin:0 auto}
+@media (max-width:900px){main{grid-template-columns:minmax(0,1fr);padding:12px 16px 40px}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:16px;min-width:0}
+.panel h2{margin:0 0 10px;font:600 15px "Barlow Condensed",sans-serif;letter-spacing:.08em;text-transform:uppercase;color:var(--ink2)}
+.span2{grid-column:1/-1}
+.row{display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px}
+.small{font-size:13px;color:var(--ink2)}
+.muted{color:var(--muted)}
+.hidden{display:none !important}
+.alert{margin-top:10px;padding:8px 12px;border-left:3px solid var(--warn);background:var(--bg);font-size:14px}
+.alert:empty{display:none}
+.note{padding:8px 12px;border-left:3px solid var(--line);background:var(--bg);font-size:14px;margin:10px 0}
+
+/* conditions */
+.wx{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px 18px;margin-top:6px}
+.wx .k,.tile .k{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.wx .v{font:500 22px var(--mono)}
+.wx .s{font-size:12px;color:var(--ink2)}
+.advice{margin-top:12px;padding:8px 12px;background:var(--bg);border-radius:4px;font-size:14px}
+
+/* live */
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px}
+.tile .v{font:500 30px/1.1 var(--mono);font-variant-numeric:tabular-nums}
+.tile .v small{font-size:14px;color:var(--ink2);margin-left:4px}
+.tile .s{font-size:12px;color:var(--ink2);margin-top:2px}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:2px 8px;border:1px solid var(--line);border-radius:10px;margin-top:4px}
+
+.chart{position:relative;width:100%;margin-top:12px}
+.chart canvas{display:block;width:100%}
+.ctitle{font-size:13px;font-weight:600;color:var(--ink2);display:flex;flex-wrap:wrap;gap:4px 14px;align-items:center}
+.lg{display:inline-flex;align-items:center;gap:6px;font-weight:400}
+.lg i{display:inline-block;width:14px;height:3px;border-radius:2px}
+.lg i.d{height:0;border-top:2px dashed}
+.lg i.o{width:9px;height:9px;border-radius:50%}
+.tip{position:absolute;pointer-events:none;background:var(--bar);color:var(--bar-ink);font:12px var(--mono);padding:5px 8px;border-radius:4px;white-space:pre;display:none;z-index:2}
+
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:right;padding:5px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{font-weight:600;color:var(--ink2);font-size:12px;letter-spacing:.04em;text-transform:uppercase}
+th:first-child,td:first-child{text-align:left}
+td.l{text-align:left;white-space:normal}
+.scroll{overflow-x:auto}
+
+.status{display:inline-flex;align-items:center;gap:8px;padding:5px 12px;border:1px solid var(--line);border-radius:4px;font-weight:600;font-size:14px;white-space:nowrap}
+.seg{display:inline-flex}
+.seg button{border-radius:0;margin-left:-1px}
+.seg button:first-child{border-radius:4px 0 0 4px;margin-left:0}
+.seg button:last-child{border-radius:0 4px 4px 0}
+.seg button[aria-pressed=true],button.tog[aria-pressed=true]{background:var(--ink);color:var(--panel);border-color:var(--ink)}
+.sim{border:1px dashed var(--accent)}
+
+/* session form */
+form.sess{display:grid;grid-template-columns:auto 1fr;gap:8px 12px;align-items:center}
+form.sess label{font-size:13px;color:var(--ink2)}
+form.sess input,form.sess select{width:100%}
+
+/* index */
+.index{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:6px 16px}
+.index a{display:flex;justify-content:space-between;gap:10px;color:var(--ink);text-decoration:none;padding:6px 8px;border-radius:4px;border:1px solid transparent}
+.index a:hover{border-color:var(--line)}
+
+/* test cards */
+.card{scroll-margin-top:70px}
+.card.running{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.card-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+.card-head h2{margin:0;font-size:19px;color:var(--ink)}
+.card-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.25fr);gap:20px}
+@media (max-width:1000px){.card-grid{grid-template-columns:minmax(0,1fr)}}
+.card p{margin:0 0 8px}
+ol.steps{padding-left:0;list-style:none;margin:10px 0;counter-reset:st}
+ol.steps li{counter-increment:st;display:grid;grid-template-columns:28px minmax(0,1fr);gap:8px;padding:7px 0;border-top:1px solid var(--line)}
+ol.steps li::before{content:counter(st);font:600 13px var(--mono);color:var(--muted);padding-top:3px}
+ol.steps .act{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin-top:4px}
+ol.steps label.chk{display:flex;gap:8px;align-items:flex-start;cursor:pointer}
+ol.steps label.chk input{margin-top:4px;width:16px;height:16px;flex-shrink:0}
+button.mark{border-color:var(--ink2);font-weight:600;font-size:14px;padding:4px 10px}
+button.mark.done{background:var(--bg)}
+.mt{font:13px var(--mono);color:var(--ink2)}
+.crit{background:var(--bg);border-radius:4px;padding:8px 12px;font-size:14px}
+.crit ul{margin:4px 0 0;padding-left:18px}
+.ctl{margin-top:12px}
+.need{font-size:12px;font-weight:600;color:var(--warn)}
+
+/* autopilot */
+.ap{border-width:2px}
+.ap.you{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent)}
+.ap-now{display:grid;gap:8px;margin:12px 0 4px;padding:14px 16px;background:var(--bg);border-radius:6px}
+.ap-kicker{font:600 12px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--ink2);display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.ap-tag{padding:1px 9px;border-radius:10px;border:1px solid var(--line);font-family:"Barlow",sans-serif;letter-spacing:.08em}
+.ap.you .ap-tag{background:var(--accent);border-color:var(--accent);color:#15191d}
+.ap-say{font:500 22px/1.3 "Barlow",sans-serif}
+.ap-sub{font:14px var(--mono);color:var(--ink2)}
+button.big{font-size:17px;padding:10px 22px}
+.ap-plan{display:flex;flex-wrap:wrap;gap:6px;list-style:none;padding:0;margin:10px 0 0}
+.ap-plan li{display:inline-flex;gap:6px;align-items:center;font-size:13px;padding:3px 10px;border:1px solid var(--line);border-radius:12px}
+.ap-plan li.cur{border-color:var(--accent);font-weight:600}
+.ap-log{max-height:130px;overflow:auto;font:12px/1.5 var(--mono);color:var(--ink2);margin-top:10px;white-space:pre-wrap}
+label.tg{display:inline-flex;gap:6px;align-items:center;font-size:13px;cursor:pointer}
+.fast{font:600 12px var(--mono);color:var(--bad)}
+#rtTable td.l{white-space:normal}
+
+@media print{
+  .ap,#rtPanel .row{display:none !important}
+  header{position:static}
+  header button,.sim,.ctl,.noprint,button.mark,#btnRefresh{display:none !important}
+  body{background:#fff}
+  .panel{break-inside:avoid;border-color:#bbb}
+  .card{break-before:page}
+  main{display:block}
+  .panel{margin-bottom:12px}
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="title">
+    <div class="sq"></div>
+    <h1>Weather module lab</h1>
+    <span class="sub">BME280 &middot; LTR390 &middot; STEMMA soil &middot; Feather RP2040</span>
+  </div>
+  <div class="link"><span class="dot" id="linkDot"></span><span id="linkText">Not connected</span></div>
+  <button class="primary" id="btnConnect">Connect board</button>
+  <button id="btnFake">Fake data</button>
+  <button id="btnStop" class="hidden">Disconnect</button>
+</header>
+
+<main>
+  <!-- autopilot -->
+  <section class="panel span2 ap" id="apPanel">
+    <div class="row" style="justify-content:space-between">
+      <h2 style="margin:0">Autopilot <span class="fast" id="apFast"></span></h2>
+      <div class="row">
+        <label class="tg"><input type="checkbox" id="tgSound"> Sound</label>
+        <label class="tg"><input type="checkbox" id="tgVoice"> Voice</label>
+        <label class="tg"><input type="checkbox" id="tgSoak"> Include T8 soak (hours)</label>
+        <button class="primary" id="apStartBtn">Start autopilot</button>
+        <button id="apPauseBtn" class="hidden">Pause</button>
+        <button id="apStopBtn" class="hidden">Stop</button>
+      </div>
+    </div>
+    <div class="ap-now">
+      <div class="ap-kicker"><span class="ap-tag" id="apTag">Idle</span><span id="apKicker"></span></div>
+      <div class="ap-say" id="apSay"></div>
+      <div class="ap-sub" id="apSub"></div>
+      <div class="row" id="apBtns">
+        <button class="primary big hidden" id="apDone">Done <span class="small">(space)</span></button>
+        <button class="hidden" id="apSkip">Skip this step</button>
+        <button class="hidden" id="apAbort">Abort this test</button>
+      </div>
+    </div>
+    <ol class="ap-plan" id="apPlan"></ol>
+    <div class="ap-log" id="apLog"></div>
+  </section>
+
+  <!-- retest list -->
+  <section class="panel span2" id="rtPanel">
+    <div class="row" style="justify-content:space-between">
+      <h2 style="margin:0">Needs testing</h2>
+      <div class="row">
+        <span class="small" id="saveStatus"></span>
+        <button id="btnExportAll">Export for Claude</button>
+        <button class="primary" id="rtAll">Run all of these</button>
+      </div>
+    </div>
+    <div class="scroll" style="margin-top:8px"><table id="rtTable"></table></div>
+  </section>
+
+  <!-- current conditions -->
+  <section class="panel span2" id="wxPanel">
+    <div class="row" style="justify-content:space-between">
+      <h2 style="margin:0">Current conditions &middot; <span id="wxPlace"></span></h2>
+      <div class="row small">
+        <span id="wxAge">Not fetched yet</span>
+        <button id="btnRefresh">Refresh conditions</button>
+      </div>
+    </div>
+    <div class="wx" id="wxGrid"></div>
+    <div class="advice" id="wxAdvice">Fetching...</div>
+    <div class="alert" id="wxErr"></div>
+  </section>
+
+  <!-- how to use -->
+  <section class="panel">
+    <h2>How to run this lab</h2>
+    <p style="margin-top:0">Easiest way: connect the board and press <b>Start autopilot</b>. It runs every test in <i>Needs testing</i> in an order that keeps walking to a minimum, starts and finishes each one itself, and spots breaths, soil dunks, floors and sun on its own. When it needs your hands it chimes, says the instruction out loud and sends a Mac notification; press <b>Done</b> or the space bar once you've done it. Sun tests wait for a forecast UV index of 1 or more. Everything autosaves to <code>bench/runs/</code>.</p>
+    <p>The cards below still work by hand if you want to drive a test yourself.</p>
+    <ul class="small" style="padding-left:18px;margin:0">
+      <li><b>Start test</b> stamps the clock. Grey <b>Mark</b> buttons stamp the moment you do each physical step, so press them as you act, not after.</li>
+      <li>Only one test runs at a time. <b>Finish</b> freezes the result and its data. <b>Reset</b> clears it to redo.</li>
+      <li>Pass limits are bench judgment set from the datasheet and our first runs. Where a limit is the datasheet's own number it says so.</li>
+      <li>Conditions refresh every 10 minutes and the station reading is frozen into each test when you finish it.</li>
+      <li>Results stay in this browser across reloads. The raw stream does not: <b>Save raw stream</b> into <code>bench/runs/</code> before closing.</li>
+      <li>The RS485 probe is not in the board's stream yet, so this lab covers the STEMMA soil sensor only. Calibration lives in <code>soil-cal.html</code>.</li>
+    </ul>
+  </section>
+
+  <!-- session -->
+  <section class="panel">
+    <h2>Session</h2>
+    <form class="sess" onsubmit="return false">
+      <label for="sTester">Tester</label><input id="sTester">
+      <label for="sConfig">Configuration</label>
+      <select id="sConfig"><option value="bare">Bare boards on the bench</option><option value="enclosure">In the printed enclosure</option></select>
+      <label for="sElev">Your elevation, m</label>
+      <div class="row" style="gap:8px"><input type="number" id="sElev" step="1" style="width:110px"><span class="small" id="sElevNote"></span></div>
+      <label for="sStation">NWS station</label>
+      <div class="row" style="gap:8px"><input id="sStation" style="width:90px"><span class="small">lat <input id="sLat" type="number" step="0.0001" style="width:100px"> lon <input id="sLon" type="number" step="0.0001" style="width:100px"></span></div>
+    </form>
+    <p class="small" style="margin:8px 0 0">Elevation matters only for the pressure check in T3. Get the ground elevation of where you stand from a map (Google Earth shows it at the cursor) and add about 3 m per floor above ground.</p>
+    <div class="row noprint" style="margin-top:12px">
+      <button id="btnPrint">Print / save PDF report</button>
+      <button id="btnExportRes">Save results CSV</button>
+      <button id="btnExportRaw">Save raw stream CSV</button>
+      <button id="btnClearAll">Clear all results</button>
+    </div>
+  </section>
+
+  <!-- live -->
+  <section class="panel span2">
+    <div class="row" style="justify-content:space-between"><h2 style="margin:0">Live readings</h2><span class="small" id="runBanner"></span></div>
+    <div class="tiles" style="margin-top:10px">
+      <div class="tile"><div class="k">Air temperature</div><div class="v"><span id="vT">--</span><small>C</small></div><div class="s" id="rT">&nbsp;</div><div class="chip" id="settleT"><span class="dot"></span><span>Waiting</span></div></div>
+      <div class="tile"><div class="k">Humidity</div><div class="v"><span id="vRH">--</span><small>%</small></div><div class="s" id="rRH">&nbsp;</div></div>
+      <div class="tile"><div class="k">Pressure, at the sensor</div><div class="v"><span id="vP">--</span><small>hPa</small></div><div class="s" id="rP">&nbsp;</div></div>
+      <div class="tile"><div class="k">UV index</div><div class="v"><span id="vUV">--</span></div><div class="s" id="rUV">&nbsp;</div></div>
+      <div class="tile"><div class="k">Soil (STEMMA)</div><div class="v"><span id="vS">--</span><small>counts</small></div><div class="s" id="rS">&nbsp;</div></div>
+    </div>
+    <div class="alert" id="alert"></div>
+    <div class="chart">
+      <div class="ctitle">Last 5 minutes <span class="lg"><i style="background:var(--s1)"></i>Module</span><span class="lg"><i class="d" style="border-color:var(--s2)"></i>Station reference</span><span class="lg"><i class="d" style="border-color:var(--muted)"></i>Marks in the running test</span></div>
+      <canvas id="live"></canvas><div class="tip"></div>
+    </div>
+  </section>
+
+  <!-- fake-mode simulator -->
+  <section class="panel span2 sim hidden" id="simPanel">
+    <h2>Simulator (fake data only)</h2>
+    <div class="row">
+      <div class="seg" id="simPlace" role="group" aria-label="Where the module is">
+        <button data-v="in" aria-pressed="true">Indoors</button><button data-v="shade" aria-pressed="false">Outside, shade</button><button data-v="sun" aria-pressed="false">Outside, sun</button>
+      </div>
+      <button id="simBreath">Breathe on it</button>
+      <button id="simCover" class="tog" aria-pressed="false">Cover UV sensor</button>
+      <span class="row" style="gap:6px">Floor <button id="simDown">-</button><b class="mono" id="simFloor">0</b><button id="simUp">+</button></span>
+      <div class="seg" id="simSoil" role="group" aria-label="Soil sensor">
+        <button data-v="air" aria-pressed="true">Soil: air</button><button data-v="dry" aria-pressed="false">Dry soil</button><button data-v="water" aria-pressed="false">Water</button>
+      </div>
+    </div>
+    <p class="small" style="margin:8px 0 0">Outdoor values follow the live station reading. After dark the fake UV pretends the index is 4 so the UV test can be rehearsed. Fake time constants are shortened so a rehearsal does not take 20 minutes.</p>
+  </section>
+
+  <!-- index -->
+  <section class="panel span2">
+    <div class="row" style="justify-content:space-between"><h2 style="margin:0">Tests</h2><span class="small" id="idxSummary"></span></div>
+    <div class="index" id="index" style="margin-top:8px"></div>
+  </section>
+
+  <div class="span2" id="cards" style="display:contents"></div>
+</main>
+
+<script>
+"use strict";
+// ---------- constants ----------
+const WINDOW_S = 300;          // seconds shown on the live chart
+const STORE = "wxlab.v1";
+const WX_EVERY_MS = 10*60*1000;
+const ALT_K = 5.25588;         // exponent of the standard-atmosphere pressure law
+
+const $ = id => document.getElementById(id);
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const nowS = () => Date.now()/1000;
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const num = (v, d) => v == null || !Number.isFinite(v) ? "--" : v.toFixed(d);
+const sgn = (v, d) => v == null || !Number.isFinite(v) ? "--" : (v > 0 ? "+" : "") + v.toFixed(d);
+
+// ---------- physics ----------
+// The sensor reads pressure where it sits. Stations report it reduced to sea level
+// with the standard atmosphere, so convert ours the same way before comparing.
+const toSeaLevel = (p, h) => p / Math.pow(1 - 0.0065*h/288.15, ALT_K);
+// Run the same law backwards: what elevation makes our pressure match the station's?
+const impliedElev = (p, pSea) => 288.15/0.0065 * (1 - Math.pow(p/pSea, 1/ALT_K));
+// Height between two pressures (hypsometric equation, dry air): R/g = 29.27 m per kelvin.
+const dHeight = (p0, p, tC) => 29.27*(tC + 273.15)*Math.log(p0/p);
+
+// ---------- state ----------
+let rows = [];                 // every reading this session: {t (epoch s), clock, ms, tempC, rh, hPa, uvi, soil}
+let badLines = [];             // epoch s of lines that did not parse
+let lastRowAt = 0, source = null;
+let W = {obs:null, model:null, fetchedAt:0};
+let S = loadState();
+
+function defaults(){
+  return {session:{tester:"Coby Maybrook", config:"enclosure", elev:"", station:"KCOU", lat:38.9517, lon:-92.3341,
+                   sound:true, voice:true, soak:false},
+          tests:{}, wlog:[]};
+}
+function loadState(){
+  try {
+    const s = JSON.parse(localStorage.getItem(STORE));
+    // session keys added later (sound, voice, soak) get their defaults instead of undefined
+    if (s && s.session) return Object.assign(defaults(), s, {session:Object.assign(defaults().session, s.session)});
+  } catch(e){}
+  return defaults();
+}
+function save(){ try { localStorage.setItem(STORE, JSON.stringify(S)); } catch(e){ showAlert("Browser storage is full or blocked: results will not survive a reload. Save the CSVs."); } }
+function tstate(id){ return S.tests[id] || (S.tests[id] = {status:"idle", marks:{}, checks:{}, notes:""}); }
+
+// ---------- the stream ----------
+function parseLine(line){
+  const p = line.trim().split(",");
+  if (p.length !== 6) return null;
+  const n = p.map(Number);
+  if (n.some(v => !Number.isFinite(v))) return null;
+  return {ms:n[0], tempC:n[1], rh:n[2], hPa:n[3], uvi:n[4], soil:n[5]};
+}
+function ingest(r){
+  const now = Date.now();
+  r.t = now/1000; r.clock = new Date(now).toISOString();
+  rows.push(r); lastRowAt = now;
+  // Chrome slows timers in a hidden tab, but serial data keeps arriving, so let each line drive the autopilot too
+  if (typeof apPulse === "function") apPulse();
+}
+
+let port = null, reader = null;
+async function connectSerial(){
+  if (!("serial" in navigator)){ showAlert("This browser has no Web Serial. Open the page in Chrome or Edge, from http://localhost."); return; }
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({baudRate:115200});      // the Feather's USB serial ignores baud, but open() needs one
+  } catch(e){
+    if (e.name !== "NotFoundError") showAlert("Could not open the port: " + e.message + ". Another program (log.py, plot.py, soil-cal, screen, Mu) may be holding it.");
+    port = null; return;
+  }
+  stopFake(); setSource("serial");
+  const dec = new TextDecoderStream();
+  port.readable.pipeTo(dec.writable).catch(()=>{});
+  reader = dec.readable.getReader();
+  let buf = "";
+  try {
+    while (true){
+      const {value, done} = await reader.read();
+      if (done) break;
+      buf += value;
+      const lines = buf.split("\n");
+      buf = lines.pop();                      // keep the half line for next time
+      for (const line of lines){
+        const r = parseLine(line);
+        if (r) ingest(r);
+        else if (line.trim() && !line.startsWith("ms,")){ badLines.push(nowS()); showAlert("Board said: " + line.trim()); }
+      }
+    }
+  } catch(e){ showAlert("Serial read stopped: " + e.message + ". Unplugged?"); }
+  await disconnect();
+}
+async function disconnect(){
+  try { if (reader) await reader.cancel(); } catch(e){}
+  try { if (port) await port.close(); } catch(e){}
+  reader = null; port = null; stopFake(); setSource(null);
+}
+function setSource(s){
+  source = s;
+  $("btnConnect").classList.toggle("hidden", !!s);
+  $("btnFake").classList.toggle("hidden", !!s);
+  $("btnStop").classList.toggle("hidden", !s);
+  $("simPanel").classList.toggle("hidden", s !== "fake");
+  if (s) showAlert("");
+}
+
+// ---------- fake data ----------
+// A first-order lag toward whatever the simulator buttons say the world is doing.
+const sim = {place:"in", cover:false, floor:0, soilMode:"air", soilOff:0, T:23.5, RH:45, bT:0, bRH:0, uv:0, soil:358, ms:0};
+let fakeTimer = null;
+const gauss = () => { let u=0; while(!u) u=Math.random(); return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*Math.random()); };
+function startFake(){
+  stopFake(); setSource("fake");
+  fakeTimer = setInterval(() => {
+    const dt = 0.5, ref = refNow(), h = elevNow().h;
+    const outT = ref.tempC ?? 15, outRH = ref.rh ?? 60, pSea = ref.alt ?? 1013.25;
+    const sunHeat = sim.place === "sun" ? (S.session.config === "bare" ? 4.0 : 0.7) : 0;
+    const tgtT = sim.place === "in" ? 23.5 : outT + sunHeat;
+    const tgtRH = sim.place === "in" ? 45 : Math.min(100, outRH * Math.exp(-0.06*sunHeat));
+    const tauT = S.session.config === "bare" ? 35 : 80;
+    sim.T += (tgtT - sim.T) * dt/tauT;
+    sim.RH += (tgtRH - sim.RH) * dt/25;
+    sim.bT *= Math.exp(-dt/10); sim.bRH *= Math.exp(-dt/22);
+    const dayU = (ref.uvi ?? 0) >= 0.5 ? ref.uvi : 4;
+    const tgtU = sim.cover || sim.place === "in" ? 0 : sim.place === "shade" ? 0.9*dayU : 2.7*dayU;
+    sim.uv += (tgtU - sim.uv) * 0.5;
+    const tgtS = sim.soilMode === "air" ? 358 : sim.soilMode === "dry" ? 430 : 1010 + sim.soilOff;
+    sim.soil += (tgtS - sim.soil) * 0.35;
+    // dp/dh is about 0.114 hPa per metre near the ground; one floor is about 3.2 m
+    const p = pSea * Math.pow(1 - 0.0065*h/288.15, ALT_K) - sim.floor*3.2*0.114;
+    sim.ms += 500;
+    ingest({ms:sim.ms, tempC:sim.T + sim.bT + 0.015*gauss(), rh:Math.max(0, Math.min(100, sim.RH + sim.bRH + 0.15*gauss())),
+            hPa:p + 0.012*gauss(), uvi:Math.max(0, sim.uv + (sim.uv > 0.05 ? 0.03*gauss() : 0)),
+            soil:Math.round(sim.soil + 1.2*gauss())});
+  }, 500);
+}
+function stopFake(){ if (fakeTimer) clearInterval(fakeTimer); fakeTimer = null; }
+
+// ---------- maths ----------
+function stats(vals){
+  const n = vals.length;
+  if (!n) return {n:0, mean:null, sd:null, min:null, max:null};
+  let s = 0, mn = Infinity, mx = -Infinity;
+  for (const v of vals){ s += v; if (v < mn) mn = v; if (v > mx) mx = v; }
+  const mean = s/n;
+  let q = 0; for (const v of vals) q += (v-mean)**2;
+  return {n, mean, sd: n > 1 ? Math.sqrt(q/(n-1)) : 0, min:mn, max:mx};
+}
+function slope(ts, ys){
+  const n = ts.length; if (n < 2) return 0;
+  let mt=0, my=0; for (let i=0;i<n;i++){ mt += ts[i]; my += ys[i]; } mt /= n; my /= n;
+  let a=0, b=0; for (let i=0;i<n;i++){ a += (ts[i]-mt)*(ys[i]-my); b += (ts[i]-mt)**2; }
+  return b ? a/b : 0;
+}
+// Dew point (Magnus formula). It depends only on how much water is in the air, so a sensor
+// that is warmer than the air still reads the right dew point. That separates "wrong air" from "warm board".
+function dewPt(T, rh){
+  if (T == null || rh == null || rh <= 0) return null;
+  const g = Math.log(rh/100) + 17.62*T/(243.12 + T);
+  return 243.12*g/(17.62 - g);
+}
+function inWin(rs, a, b){ const out = []; for (const r of rs) if (r.t >= a && r.t <= b) out.push(r); return out; }
+// Stats of one field inside [a, b]. Soil -1 means "sensor absent", so it never counts.
+function fstat(rs, f, a, b){
+  const v = []; for (const r of rs) if (r.t >= a && r.t <= b && (f !== "soil" || r.soil >= 0)) v.push(r[f]);
+  return stats(v);
+}
+function recent(seconds){
+  if (!rows.length) return [];
+  const tEnd = rows[rows.length-1].t; let i = rows.length - 1;
+  while (i > 0 && rows[i-1].t >= tEnd - seconds) i--;
+  return rows.slice(i);
+}
+// Temperature is settled when the last 2 minutes trend less than 0.05 C per minute.
+function settleT(){
+  const w = recent(120);
+  if (w.length < 20 || w[w.length-1].t - w[0].t < 90) return {state:"wait"};
+  const sl = slope(w.map(r=>r.t), w.map(r=>r.tempC)) * 60;
+  return {state: Math.abs(sl) < 0.05 ? "settled" : "settling", slope:sl};
+}
+function downsample(arr, max){
+  if (arr.length <= max) return arr;
+  const k = arr.length / max, out = [];
+  for (let i=0; i<max; i++) out.push(arr[Math.floor(i*k)]);
+  out.push(arr[arr.length-1]);
+  return out;
+}
+
+// ---------- reference weather ----------
+function refNow(){
+  const o = W.obs, m = W.model;
+  return {
+    tempC: o && o.tempC != null ? o.tempC : m ? m.tempC : null,
+    tempSrc: o && o.tempC != null ? S.session.station : "model",
+    rh: o && o.rh != null ? o.rh : m ? m.rh : null,
+    alt: o && o.alt != null ? o.alt : m ? m.msl : null,
+    uvi: m ? m.uvi : null, cloud: m ? m.cloud : null, isDay: m ? m.isDay : null,
+    obsT: o && o.time ? Date.parse(o.time)/1000 : null, desc: o ? o.desc : null,
+    station: S.session.station,
+  };
+}
+function elevNow(){
+  const v = parseFloat(S.session.elev);
+  if (Number.isFinite(v)) return {h:v, src:"entered"};
+  return {h: W.model && W.model.elev != null ? W.model.elev : 230, src:"model grid"};
+}
+async function fetchWeather(){
+  const s = S.session, errs = [];
+  $("wxAge").textContent = "Fetching...";
+  const getJson = url => fetch(url, {headers:{Accept:"application/geo+json, application/json"}}).then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); });
+  const [nws, om] = await Promise.allSettled([
+    getJson(`https://api.weather.gov/stations/${encodeURIComponent(s.station)}/observations/latest`),
+    getJson(`https://api.open-meteo.com/v1/forecast?latitude=${s.lat}&longitude=${s.lon}&current=temperature_2m,relative_humidity_2m,surface_pressure,pressure_msl,uv_index,cloud_cover,is_day,wind_speed_10m&daily=uv_index_max,sunrise,sunset&hourly=uv_index,cloud_cover,is_day&timezone=auto&forecast_days=3`),
+  ]);
+  if (nws.status === "fulfilled"){
+    const p = nws.value.properties, v = k => p[k] && p[k].value != null ? p[k].value : null;
+    const bp = v("barometricPressure"), slp = v("seaLevelPressure");
+    W.obs = {time:p.timestamp, desc:p.textDescription, tempC:v("temperature"), dew:v("dewpoint"), rh:v("relativeHumidity"),
+             alt: bp != null ? bp/100 : slp != null ? slp/100 : null, wind:v("windSpeed"), name:p.stationName || s.station};
+  } else errs.push(`NWS station ${s.station}: ${nws.reason.message}`);
+  if (om.status === "fulfilled"){
+    const c = om.value.current, d = om.value.daily;
+    W.model = {time:c.time, tempC:c.temperature_2m, rh:c.relative_humidity_2m, sfc:c.surface_pressure, msl:c.pressure_msl,
+               uvi:c.uv_index, cloud:c.cloud_cover, isDay:!!c.is_day, wind:c.wind_speed_10m,
+               uviMax:d.uv_index_max[0], sunrise:d.sunrise[0], sunset:d.sunset[0], elev:om.value.elevation,
+               hourly:{time:om.value.hourly.time, uvi:om.value.hourly.uv_index, cloud:om.value.hourly.cloud_cover}};
+  } else errs.push(`Open-Meteo: ${om.reason.message}`);
+  W.fetchedAt = Date.now();
+  $("wxErr").textContent = errs.length ? "Could not fetch: " + errs.join("; ") + ". Tests that compare to the station need this." : "";
+  // Keep a log of distinct observations: the soak test pairs each one with the module.
+  const r = refNow(), last = S.wlog[S.wlog.length-1];
+  if (r.tempC != null && !(last && last.obsT === r.obsT && last.uvi === r.uvi)){
+    S.wlog.push({at:nowS(), obsT:r.obsT, tempC:r.tempC, rh:r.rh, alt:r.alt, uvi:r.uvi, cloud:r.cloud});
+    if (S.wlog.length > 800) S.wlog = S.wlog.slice(-800);
+    save();
+  }
+  renderWeather();
+}
+const hm = iso => iso ? new Date(iso).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}) : "--";
+function renderWeather(){
+  const o = W.obs, m = W.model;
+  $("wxPlace").textContent = (o && o.name ? o.name : S.session.station) + (m ? "" : "");
+  const cell = (k, v, s) => `<div><div class="k">${k}</div><div class="v">${v}</div><div class="s">${s || "&nbsp;"}</div></div>`;
+  const obsAge = o && o.time ? Math.round((Date.now() - Date.parse(o.time))/60000) : null;
+  $("wxGrid").innerHTML =
+    cell("Sky", o && o.desc ? esc(o.desc) : "--", m ? `cloud ${m.cloud}%` : "") +
+    cell("Temperature", o && o.tempC != null ? num(o.tempC,1) + " C" : "--", o && o.dew != null ? `dew point ${num(o.dew,1)} C` : "") +
+    cell("Humidity", o && o.rh != null ? num(o.rh,0) + " %" : "--", "") +
+    cell("Pressure", o && o.alt != null ? num(o.alt,1) + " hPa" : "--", "sea-level equivalent") +
+    cell("UV index", m ? num(m.uvi,1) : "--", m ? `today's peak ${num(m.uviMax,1)} (model)` : "") +
+    cell("Wind", o && o.wind != null ? num(o.wind,0) + " km/h" : "--", "") +
+    cell("Daylight", m ? (m.isDay ? "Day" : "Night") : "--", m ? `sunrise ${hm(m.sunrise)}, sunset ${hm(m.sunset)}` : "");
+  $("wxAge").textContent = W.fetchedAt ? `Station observed ${o && o.time ? hm(o.time) : "--"}${obsAge != null ? ` (${obsAge} min ago)` : ""} · fetched ${new Date(W.fetchedAt).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"})}` : "Not fetched yet";
+  let adv = "";
+  if (m){
+    if (!m.isDay) adv = `Sun is down. T5 (UV) and T6 (sun loading) need daylight; everything else can run now.`;
+    else if (m.uvi < 1) adv = `UV index is only ${num(m.uvi,1)} with ${m.cloud}% cloud. T5 and T6 will not show much; best between about 10 am and 3 pm on a clear day.`;
+    else if (m.cloud > 60) adv = `UV ${num(m.uvi,1)} under ${m.cloud}% cloud. T5 will run, but passing clouds make the sun reading jump. T6 needs steady direct sun.`;
+    else adv = `Good sun: UV ${num(m.uvi,1)}, ${m.cloud}% cloud. A good window for T5 and T6.`;
+    if (obsAge != null && obsAge > 75) adv += ` The station observation is ${obsAge} min old, so treat temperature comparisons loosely.`;
+  }
+  $("wxAdvice").textContent = adv || "Waiting for conditions.";
+  renderRetest();
+  const e = elevNow();
+  $("sElev").placeholder = e.src === "model grid" ? String(Math.round(e.h)) : "";
+  $("sElevNote").textContent = e.src === "model grid" ? `blank: using ${Math.round(e.h)} m from the weather model's grid, which can be 20 m off` : "";
+}
+
+// ---------- charts ----------
+function prep(cv, h){
+  const dpr = window.devicePixelRatio || 1, w = cv.clientWidth || 600;
+  if (cv.width !== Math.round(w*dpr) || cv.height !== Math.round(h*dpr)){ cv.width = Math.round(w*dpr); cv.height = Math.round(h*dpr); }
+  cv.style.height = h + "px";
+  const g = cv.getContext("2d"); g.setTransform(dpr,0,0,dpr,0,0); g.clearRect(0,0,w,h);
+  return {g, w, h};
+}
+function niceTicks(lo, hi, n){
+  const span = hi - lo || 1, step0 = span/n, mag = 10 ** Math.floor(Math.log10(step0));
+  const step = [1,2,5,10].map(k=>k*mag).find(s => s >= step0);
+  const out = []; for (let v = Math.ceil(lo/step)*step; v <= hi + 1e-9; v += step) out.push(+v.toFixed(6));
+  return out;
+}
+// Time ticks land on whole seconds and minutes, so labels read as m:ss.
+function timeTicks(lo, hi){
+  const span = hi - lo || 1;
+  const step = [1,2,5,10,15,30,60,120,300,600,900,1800,3600,7200,14400].find(s => span/s <= 7) || 28800;
+  const out = []; for (let v = Math.ceil(lo/step)*step; v <= hi + 1e-9; v += step) out.push(v);
+  return out;
+}
+function fmtDur(s){
+  const neg = s < 0; s = Math.abs(Math.round(s));
+  const h = Math.floor(s/3600), m = Math.floor(s%3600/60), x = s%60;
+  const t = h ? `${h}:${String(m).padStart(2,"0")}:${String(x).padStart(2,"0")}` : `${m}:${String(x).padStart(2,"0")}`;
+  return (neg ? "-" : "") + t;
+}
+function minmax(vals){ let lo = Infinity, hi = -Infinity; for (const v of vals){ if (v < lo) lo = v; if (v > hi) hi = v; } return [lo, hi]; }
+function hoverable(cv, redraw){
+  cv._redraw = redraw;
+  if (cv._wired) return; cv._wired = true;
+  cv.addEventListener("mousemove", e => { cv._hx = e.offsetX; cv._hy = e.offsetY; cv._redraw && cv._redraw(); });
+  cv.addEventListener("mouseleave", () => { cv._hx = null; cv._redraw && cv._redraw(); });
+}
+function showTip(cv, x, y, text, w){
+  const tip = cv.nextElementSibling; if (!tip) return;
+  if (text == null){ tip.style.display = "none"; return; }
+  tip.style.display = "block"; tip.textContent = text;
+  tip.style.left = Math.max(0, Math.min(x + 14, w - tip.offsetWidth - 4)) + "px";
+  tip.style.top = Math.max(0, y - tip.offsetHeight - 8) + "px";
+}
+
+/* Stacked panels sharing one time axis. Each panel has its own y scale, so two
+   quantities never share a dual axis. o = {x0, x1, ph, panels:[{label, unit, d,
+   series:[{pts:[[x,y]], color, dash, dots, name}], refs:[{y,color,label}],
+   bands:[{y0,y1}], minSpan}], vlines:[{x,label}], vbands:[{x0,x1,label}]} */
+function stack(cv, o){
+  // marks and phase names get their own strip above the plot, two rows so neighbours never collide
+  const strip = (o.vlines && o.vlines.length) || (o.vbands && o.vbands.length);
+  const PH = o.ph || 110, GAP = 30, TOP = strip ? 64 : 22, BOT = 36;
+  const H = TOP + o.panels.length*PH + (o.panels.length-1)*GAP + BOT;
+  const {g, w} = prep(cv, H);
+  const box = {l:62, r:w-16};
+  const x0 = o.x0, x1 = o.x1 > o.x0 ? o.x1 : o.x0 + 1;
+  const sx = x => box.l + (x - x0)/(x1 - x0)*(box.r - box.l);
+  const mono = "12px " + css("--mono");
+  const lay = [];
+  const yBot = TOP + o.panels.length*PH + (o.panels.length-1)*GAP;
+  // phase shading spans every panel, so one glance lines the panels up
+  (o.vbands || []).forEach((b, i) => {
+    const a = sx(Math.max(x0, b.x0)), z = sx(Math.min(x1, b.x1)); if (z <= a) return;
+    g.fillStyle = css("--ink2"); g.globalAlpha = i % 2 ? .04 : .08; g.fillRect(a, TOP - 6, z - a, yBot - TOP + 6); g.globalAlpha = 1;
+    g.fillStyle = css("--ink2"); g.font = "11px " + css("--mono"); g.textAlign = "left"; g.textBaseline = "top";
+    g.fillText(b.label, a + 3, i % 2 ? 16 : 3);
+  });
+  o.panels.forEach((p, i) => {
+    const t = TOP + i*(PH + GAP), b = t + PH;
+    const vals = [];
+    p.series.forEach(s => s.pts.forEach(q => { if (q[0] >= x0 && q[0] <= x1 && Number.isFinite(q[1])) vals.push(q[1]); }));
+    (p.refs || []).forEach(r => { if (Number.isFinite(r.y) && !r.noScale) vals.push(r.y); });
+    (p.bands || []).forEach(bd => { if (Number.isFinite(bd.y0)) vals.push(bd.y0, bd.y1); });
+    let [lo, hi] = vals.length ? minmax(vals) : [0, 1];
+    if (p.yMin != null) lo = p.yMin; if (p.yMax != null) hi = p.yMax;
+    const ms = p.minSpan || 1;
+    if (hi - lo < ms){ const mid = (hi + lo)/2; lo = mid - ms/2; hi = mid + ms/2; }
+    if (p.yMin == null || p.yMax == null){ const pad = (hi - lo)*0.1; if (p.yMin == null) lo -= pad; if (p.yMax == null) hi += pad; }
+    const sy = v => b - (v - lo)/(hi - lo)*(b - t);
+    lay.push({p, t, b, sy});
+    // grid and y ticks
+    g.font = mono; g.strokeStyle = css("--grid"); g.lineWidth = 1; g.fillStyle = css("--muted"); g.textAlign = "right"; g.textBaseline = "middle";
+    const yt = niceTicks(lo, hi, 4);
+    const yd = Math.max(0, -Math.floor(Math.log10((yt[1] - yt[0]) || 1)));
+    for (const v of yt){ const y = Math.round(sy(v)) + .5; g.beginPath(); g.moveTo(box.l, y); g.lineTo(box.r, y); g.stroke(); g.fillText(v.toFixed(yd), box.l - 6, y); }
+    g.fillStyle = css("--ink2"); g.textAlign = "left"; g.textBaseline = "bottom"; g.font = "600 12px system-ui";
+    g.fillText(p.label + (p.unit ? `, ${p.unit}` : ""), box.l, t - 2);
+    g.save(); g.beginPath(); g.rect(box.l, t, box.r - box.l, b - t); g.clip();
+    (p.bands || []).forEach(bd => { g.fillStyle = bd.color ? css(bd.color) : css("--s1"); g.globalAlpha = .1; g.fillRect(box.l, sy(bd.y1), box.r - box.l, sy(bd.y0) - sy(bd.y1)); g.globalAlpha = 1; });
+    (p.refs || []).forEach(r => {
+      if (!Number.isFinite(r.y)) return;
+      const y = sy(r.y); g.strokeStyle = css(r.color || "--s2"); g.lineWidth = 2; g.setLineDash([6,4]);
+      g.beginPath(); g.moveTo(r.x0 != null ? sx(r.x0) : box.l, y); g.lineTo(r.x1 != null ? sx(r.x1) : box.r, y); g.stroke(); g.setLineDash([]);
+    });
+    p.series.forEach(s => {
+      const pts = downsample(s.pts.filter(q => Number.isFinite(q[1])), 2500);
+      g.strokeStyle = g.fillStyle = css(s.color || "--s1");
+      if (s.dots){
+        for (const q of pts){ const X = sx(q[0]), Y = sy(q[1]); g.fillStyle = css("--panel"); g.beginPath(); g.arc(X, Y, 6, 0, 7); g.fill(); g.fillStyle = css(s.color || "--s1"); g.beginPath(); g.arc(X, Y, 4.5, 0, 7); g.fill(); }
+        return;
+      }
+      g.lineWidth = s.width || 2; g.lineJoin = "round"; g.setLineDash(s.dash ? [6,4] : []); g.beginPath();
+      let prev = null;
+      for (const q of pts){
+        const X = sx(q[0]), Y = sy(q[1]);
+        if (prev === null || q[0] - prev > (s.gap || 8)) g.moveTo(X, Y); else g.lineTo(X, Y);   // break the line over data gaps
+        prev = q[0];
+      }
+      g.stroke(); g.setLineDash([]);
+    });
+    // reference labels go on top of the traces, on a surface chip, flipped below the line near the top
+    (p.refs || []).forEach(r => {
+      if (!r.label || !Number.isFinite(r.y)) return;
+      const y = sy(r.y);
+      g.font = "11px " + css("--mono"); const tw = g.measureText(r.label).width, rx = (r.x1 != null ? sx(r.x1) : box.r) - 4, ry = y - t < 16 ? y + 4 : y - 16;
+      g.fillStyle = css("--panel"); g.globalAlpha = .9; g.fillRect(rx - tw - 4, ry, tw + 8, 13); g.globalAlpha = 1;
+      g.fillStyle = css("--ink2"); g.textAlign = "right"; g.textBaseline = "top"; g.fillText(r.label, rx, ry + 1);
+    });
+    g.restore();
+  });
+  // event marks
+  (o.vlines || []).filter(v => v.x >= x0 && v.x <= x1).sort((a, b) => a.x - b.x).forEach((v, i) => {
+    const X = Math.round(sx(v.x)) + .5, row = i % 2 ? 31 : 18;
+    g.strokeStyle = css("--muted"); g.lineWidth = 1; g.setLineDash([3,3]); g.beginPath(); g.moveTo(X, row + 12); g.lineTo(X, yBot); g.stroke(); g.setLineDash([]);
+    g.fillStyle = css("--ink"); g.font = "600 11px system-ui"; g.textAlign = X > box.r - 60 ? "right" : "left"; g.textBaseline = "top";
+    g.fillText(v.label, X > box.r - 60 ? X - 3 : X + 3, row);
+  });
+  // time axis
+  g.font = mono; g.fillStyle = css("--muted"); g.textAlign = "center"; g.textBaseline = "top";
+  for (const v of timeTicks(x0, x1)) g.fillText(fmtDur(v), sx(v), yBot + 6);
+  g.fillStyle = css("--ink2"); g.fillText(o.xLabel || "time since start, m:ss", (box.l + box.r)/2, yBot + 20);
+  // hover crosshair: nearest sample in each panel's first series
+  if (cv._hx != null && cv._hx >= box.l && cv._hx <= box.r){
+    const xv = x0 + (cv._hx - box.l)/(box.r - box.l)*(x1 - x0);
+    g.strokeStyle = css("--muted"); g.lineWidth = 1; g.beginPath(); g.moveTo(cv._hx + .5, TOP); g.lineTo(cv._hx + .5, yBot); g.stroke();
+    const lines = [fmtDur(xv)];
+    for (const L of lay){
+      for (const s of L.p.series){
+        let best = null, bd = Infinity;
+        for (const q of s.pts){ const d = Math.abs(q[0] - xv); if (d < bd){ bd = d; best = q; } }
+        if (!best || bd > (x1 - x0)*0.03 + 2) continue;
+        lines.push(`${(s.name || L.p.label).padEnd(14)} ${best[1].toFixed(L.p.d ?? 2)} ${L.p.unit || ""}`);
+        if (!s.dots){ const Y = L.sy(best[1]), X = sx(best[0]); g.fillStyle = css("--panel"); g.beginPath(); g.arc(X, Y, 6, 0, 7); g.fill(); g.fillStyle = css(s.color || "--s1"); g.beginPath(); g.arc(X, Y, 4, 0, 7); g.fill(); }
+      }
+    }
+    showTip(cv, cv._hx, cv._hy, lines.join("\n"), w);
+  } else showTip(cv, 0, 0, null, w);
+  hoverable(cv, () => stack(cv, o));
+}
+
+/* One dot per phase with its low-to-high whisker. Used for phase averages where
+   the y axis does not start at zero (soil counts), so bars would mislead. */
+function catDots(cv, o){
+  const H = o.h || 220, {g, w} = prep(cv, H);
+  const box = {l:62, r:w-16, t:16, b:H-46};
+  const cats = o.cats;
+  const vals = []; cats.forEach(c => { if (c.v != null){ vals.push(c.v); if (c.lo != null) vals.push(c.lo, c.hi); } });
+  (o.refs || []).forEach(r => Number.isFinite(r.y) && vals.push(r.y));
+  let [lo, hi] = vals.length ? minmax(vals) : [0, 1];
+  if (o.yMin != null) lo = o.yMin; else lo -= (hi - lo)*0.15 || 1;
+  if (o.yMax != null) hi = o.yMax; else hi += (hi - lo)*0.15 || 1;
+  const sy = v => box.b - (v - lo)/(hi - lo)*(box.b - box.t);
+  const bw = (box.r - box.l)/Math.max(1, cats.length), cx = i => box.l + bw*(i + .5);
+  g.font = "12px " + css("--mono"); g.strokeStyle = css("--grid"); g.fillStyle = css("--muted"); g.lineWidth = 1; g.textAlign = "right"; g.textBaseline = "middle";
+  const yt = niceTicks(lo, hi, 5);
+  for (const v of yt){ const y = Math.round(sy(v)) + .5; g.beginPath(); g.moveTo(box.l, y); g.lineTo(box.r, y); g.stroke(); g.fillText(v, box.l - 6, y); }
+  g.save(); g.translate(14, (box.t + box.b)/2); g.rotate(-Math.PI/2); g.textAlign = "center"; g.fillStyle = css("--ink2"); g.fillText(o.yLabel, 0, 0); g.restore();
+  (o.refs || []).forEach(r => {
+    if (!Number.isFinite(r.y)) return; const y = sy(r.y);
+    g.strokeStyle = css(r.color || "--s2"); g.lineWidth = 2; g.setLineDash([6,4]); g.beginPath(); g.moveTo(box.l, y); g.lineTo(box.r, y); g.stroke(); g.setLineDash([]);
+    g.fillStyle = css("--ink2"); g.font = "11px " + css("--mono"); g.textAlign = "right"; g.textBaseline = "bottom"; g.fillText(r.label, box.r - 4, y - 3);
+  });
+  const marks = [];
+  cats.forEach((c, i) => {
+    const x = cx(i);
+    g.fillStyle = css("--ink2"); g.font = "12px system-ui"; g.textAlign = "center"; g.textBaseline = "top"; g.fillText(c.label, x, box.b + 8);
+    if (c.v == null){ g.fillStyle = css("--muted"); g.fillText("not marked", x, box.b + 24); return; }
+    if (c.lo != null){
+      g.strokeStyle = css("--s1"); g.lineWidth = 2; g.beginPath();
+      g.moveTo(x, sy(c.lo)); g.lineTo(x, sy(c.hi)); g.moveTo(x-6, sy(c.lo)); g.lineTo(x+6, sy(c.lo)); g.moveTo(x-6, sy(c.hi)); g.lineTo(x+6, sy(c.hi)); g.stroke();
+    }
+    const y = sy(c.v);
+    g.fillStyle = css("--panel"); g.beginPath(); g.arc(x, y, 7, 0, 7); g.fill();
+    g.fillStyle = css("--s1"); g.beginPath(); g.arc(x, y, 5.5, 0, 7); g.fill();
+    g.fillStyle = css("--ink"); g.font = "12px " + css("--mono"); g.textAlign = "left"; g.textBaseline = "middle";
+    g.fillText(c.v.toFixed(o.d ?? 1), x + 11, y);
+    marks.push({x, y, c});
+  });
+  if (cv._hx != null){
+    let best = null, bd = 30;
+    for (const m of marks){ const d = Math.abs(m.x - cv._hx); if (d < bd){ bd = d; best = m; } }
+    showTip(cv, cv._hx, cv._hy, best ? `${best.c.label}: mean ${best.c.v.toFixed(o.d ?? 1)}` + (best.c.lo != null ? `\nlow ${best.c.lo.toFixed(o.d ?? 1)}  high ${best.c.hi.toFixed(o.d ?? 1)}` : "") + (best.c.n ? `\n${best.c.n} readings` : "") : null, w);
+  } else showTip(cv, 0, 0, null, w);
+  hoverable(cv, () => catDots(cv, o));
+}
+
+/* Module vs station, one row per quantity. The shaded band is the pass window
+   around the station value; the dot is the module. */
+function compare(cv, items){
+  const RH = 62, H = 18 + items.length*RH, {g, w} = prep(cv, H);
+  const box = {l:150, r:w-150};
+  const hits = [];
+  items.forEach((it, i) => {
+    const y = 18 + i*RH + 26;
+    g.fillStyle = css("--ink"); g.font = "600 13px system-ui"; g.textAlign = "left"; g.textBaseline = "middle";
+    g.fillText(it.label, 8, y - 8); g.fillStyle = css("--muted"); g.font = "12px system-ui"; g.fillText(`pass band ±${it.tol} ${it.unit}`, 8, y + 10);
+    if (it.mod == null || it.ref == null){ g.fillStyle = css("--muted"); g.fillText("waiting for a reading and a station value", box.l, y); return; }
+    const span = Math.max(it.tol*3, Math.abs(it.mod - it.ref)*1.25);
+    const lo = it.ref - span, hi = it.ref + span, sx = v => box.l + (v - lo)/(hi - lo)*(box.r - box.l);
+    g.strokeStyle = css("--line"); g.lineWidth = 1; g.beginPath(); g.moveTo(box.l, y + .5); g.lineTo(box.r, y + .5); g.stroke();
+    g.fillStyle = css("--good"); g.globalAlpha = .14; g.fillRect(sx(it.ref - it.tol), y - 12, sx(it.ref + it.tol) - sx(it.ref - it.tol), 24); g.globalAlpha = 1;
+    g.strokeStyle = css("--s2"); g.lineWidth = 3; g.beginPath(); g.moveTo(sx(it.ref), y - 14); g.lineTo(sx(it.ref), y + 14); g.stroke();
+    const X = sx(it.mod);
+    g.fillStyle = css("--panel"); g.beginPath(); g.arc(X, y, 8, 0, 7); g.fill();
+    g.fillStyle = css("--s1"); g.beginPath(); g.arc(X, y, 6, 0, 7); g.fill();
+    g.font = "11px " + css("--mono"); g.fillStyle = css("--muted"); g.textAlign = "center"; g.textBaseline = "top";
+    g.fillText(lo.toFixed(it.d), box.l, y + 15); g.fillText(hi.toFixed(it.d), box.r, y + 15);
+    const dlt = it.mod - it.ref, ok = Math.abs(dlt) <= it.tol;
+    g.textAlign = "left"; g.textBaseline = "middle"; g.font = "600 13px " + css("--mono");
+    g.fillStyle = css("--ink"); g.fillText(`${sgn(dlt, it.d)} ${it.unit}`, box.r + 14, y - 8);
+    g.fillStyle = css(ok ? "--good" : "--bad"); g.fillText(ok ? "PASS" : "FAIL", box.r + 14, y + 10);
+    hits.push({y, text:`${it.label}\nmodule  ${it.mod.toFixed(it.d)} ${it.unit}\n${it.refName.padEnd(7)} ${it.ref.toFixed(it.d)} ${it.unit}`});
+  });
+  if (cv._hy != null && cv._hx != null){
+    const h = hits.find(h => Math.abs(h.y - cv._hy) < RH/2);
+    showTip(cv, cv._hx, cv._hy, h ? h.text : null, w);
+  } else showTip(cv, 0, 0, null, w);
+  hoverable(cv, () => compare(cv, items));
+}
+
+// Histogram of sample spacing for the link check.
+function hist(cv, vals, o){
+  const H = 200, {g, w} = prep(cv, H);
+  const box = {l:62, r:w-16, t:12, b:H-40};
+  if (!vals.length){ g.fillStyle = css("--muted"); g.font = "14px system-ui"; g.textAlign = "center"; g.fillText("No data yet", w/2, H/2); return; }
+  const [vlo, vhi] = minmax(vals), lo = Math.floor(Math.min(vlo, o.lo)/o.bin)*o.bin, hi = Math.ceil(Math.max(vhi, o.hi)/o.bin)*o.bin + o.bin;
+  const nb = Math.min(200, Math.round((hi - lo)/o.bin)), counts = Array(nb).fill(0);
+  for (const v of vals) counts[Math.min(nb - 1, Math.floor((v - lo)/o.bin))]++;
+  const cmax = Math.max(...counts), sx = v => box.l + (v - lo)/(hi - lo)*(box.r - box.l), sy = c => box.b - c/cmax*(box.b - box.t);
+  g.font = "12px " + css("--mono"); g.strokeStyle = css("--grid"); g.fillStyle = css("--muted"); g.textAlign = "right"; g.textBaseline = "middle";
+  for (const v of niceTicks(0, cmax, 4)){ const y = Math.round(sy(v)) + .5; g.beginPath(); g.moveTo(box.l, y); g.lineTo(box.r, y); g.stroke(); g.fillText(v, box.l - 6, y); }
+  g.fillStyle = css("--good"); g.globalAlpha = .12; g.fillRect(sx(o.okLo), box.t, sx(o.okHi) - sx(o.okLo), box.b - box.t); g.globalAlpha = 1;
+  const bwPx = (box.r - box.l)/nb;
+  g.fillStyle = css("--s1");
+  counts.forEach((c, i) => { if (!c) return; const x = box.l + i*bwPx + 1, y = sy(c), wd = Math.max(1, bwPx - 2); g.beginPath(); g.roundRect ? g.roundRect(x, y, wd, box.b - y, [3,3,0,0]) : g.rect(x, y, wd, box.b - y); g.fill(); });
+  g.fillStyle = css("--muted"); g.textAlign = "center"; g.textBaseline = "top";
+  for (const v of niceTicks(lo, hi, 6)) g.fillText(v, sx(v), box.b + 6);
+  g.fillStyle = css("--ink2"); g.fillText(o.xLabel, (box.l + box.r)/2, box.b + 20);
+  g.save(); g.translate(14, (box.t + box.b)/2); g.rotate(-Math.PI/2); g.fillText("lines", 0, 0); g.restore();
+  if (cv._hx != null && cv._hx >= box.l && cv._hx <= box.r){
+    const i = Math.floor((cv._hx - box.l)/bwPx);
+    if (counts[i] != null) showTip(cv, cv._hx, cv._hy, `${(lo + i*o.bin).toFixed(2)} to ${(lo + (i+1)*o.bin).toFixed(2)} s\n${counts[i]} lines`, w);
+  } else showTip(cv, 0, 0, null, w);
+  hoverable(cv, () => hist(cv, vals, o));
+}
+
+// ---------- test helpers ----------
+// A metric row. lim is the pass rule in words; ok true/false grades it, null means info only.
+const M = (k, v, unit, d, lim, ok) => ({k, v, unit, d, lim, ok: v == null ? undefined : ok});
+const pts = (rs, f, x0) => { const out = []; for (const r of rs) if (f !== "soil" || r.soil >= 0) out.push([r.t - x0, r[f]]); return out; };
+// Mark keys in time order, so each phase runs from its mark to the next one.
+function nextMark(marks, t){ let n = Infinity; for (const k in marks) if (k !== "start" && marks[k] > t + 0.01 && marks[k] < n) n = marks[k]; return n; }
+function phaseWin(c, key, skip, hold){
+  const t = c.m[key]; if (t == null) return null;
+  const a = t + skip, b = Math.min(nextMark(c.m, t) - 1, t + hold, c.end);
+  return b > a ? [a, b] : null;
+}
+function phaseStat(c, key, f, skip, hold, minN){
+  const w = phaseWin(c, key, skip, hold); if (!w) return null;
+  const s = fstat(c.rs, f, w[0], w[1]);
+  return s.n >= (minN || 5) ? Object.assign(s, {a:w[0], b:w[1]}) : null;
+}
+function markLines(c, x0, labels){ return Object.keys(labels).filter(k => c.m[k] != null).map(k => ({x:c.m[k] - x0, label:labels[k]})); }
+function phaseBands(c, x0, labels){
+  const keys = Object.keys(labels).filter(k => c.m[k] != null).sort((a, b) => c.m[a] - c.m[b]);
+  return keys.map(k => ({x0:c.m[k] - x0, x1:Math.min(nextMark(c.m, c.m[k]), c.end) - x0, label:labels[k]}));
+}
+
+// ---------- the tests ----------
+const TESTS = [
+{
+  id:"link", code:"T0", title:"Link check", time:"2 min", where:"Desk",
+  purpose:"Proves the board, cable and page are talking before any real test depends on it. A charge-only cable or a port held by another program looks exactly like dead hardware.",
+  need:"Feather with the sensors chained on, a data USB-C cable (the first one we tried was charge-only).",
+  steps:[
+    {text:"Close log.py, plot.py, soil-cal.html, screen and Mu. Only one program can hold the serial port."},
+    {text:"Click <b>Connect board</b> in the top bar and pick the Feather (shows as usbmodem...). The link light turns green and the tiles fill in."},
+    {start:true, text:"Start the test and leave it alone for 60 seconds."},
+    {text:"Glance at the tiles: temperature and humidity look like the room, UV near 0 indoors, soil reads a number or <i>absent</i>."},
+  ],
+  criteria:["At least 60 s of data", "One line every 0.3 to 1.2 s (we saw about 0.65 s on 10/20)", "No gap longer than 2 s", "No unreadable lines", "Every value inside its sensor's physical range"],
+  charts:[{id:"a", title:"Time between lines", legend:[["--s1","lines in each 0.05 s bin","bar"],["--good","pass window 0.3 to 1.2 s","band"]]}],
+  analyze(c){
+    const s = c.m.start, rs = c.rs.filter(r => r.t >= s), end = c.end;
+    const iv = []; for (let i=1; i<rs.length; i++) iv.push(rs[i].t - rs[i-1].t);
+    const st = stats(iv), dur = rs.length ? end - s : 0;
+    const inRange = rs.length ? rs.every(r => r.tempC > -40 && r.tempC < 85 && r.rh >= 0 && r.rh <= 100 && r.hPa > 300 && r.hPa < 1100 && r.uvi >= 0) : null;
+    const soil = rs.length ? (rs.some(r => r.soil >= 0) ? "present" : "absent") : null;
+    return {
+      metrics:[
+        M("Duration", dur, " s", 0, "60 s or more", dur >= 60),
+        M("Lines received", rs.length, "", 0),
+        M("Mean spacing", st.mean, " s", 3, "0.3 to 1.2 s", st.mean >= 0.3 && st.mean <= 1.2),
+        M("Longest gap", st.max, " s", 2, "2 s or less", st.max <= 2),
+        M("Unreadable lines", rs.length ? c.bad.length : null, "", 0, "0", c.bad.length === 0),
+        M("Values in physical range", inRange == null ? null : inRange ? "yes" : "no", "", 0, "yes", inRange),
+        M("STEMMA soil sensor", soil, "", 0),
+      ],
+      draw:{a: cv => hist(cv, iv, {bin:0.05, lo:0, hi:1.5, okLo:0.3, okHi:1.2, xLabel:"seconds between lines"})},
+    };
+  },
+},
+{
+  id:"noise", code:"T1", title:"Noise floor", time:"6 min", where:"Desk, indoors",
+  purpose:"Measures how much each reading jitters when nothing is changing. Every later test needs its signal to stand well clear of this floor, so this is the yardstick for the rest of the lab.",
+  need:"A quiet desk away from vents, windows, lamps and the laptop's exhaust.",
+  steps:[
+    {text:"Set the module down in the configuration chosen under Session (bare boards or enclosure)."},
+    {start:true, text:"Start the test, then step back: no touching and no breathing near it."},
+    {text:"Finish once Duration in the results reads 300 s or more. The first 10 s are ignored so your hand moving away does not count."},
+  ],
+  criteria:["Temperature SD 0.05 C or less, drift 0.3 C or less over 5 min", "Humidity SD 0.5 points or less, drift 1.5 points or less", "Pressure SD 0.05 hPa or less (datasheet relative accuracy is ±0.12 hPa)", "UV index SD 0.01 or less and mean 0.05 or less indoors", "Soil SD 3 counts or less, if the sensor is present"],
+  charts:[{id:"a", title:"Each channel with its mean and a ±2 SD band", legend:[["--s1","Module","line"],["--s1","±2 SD","band"]]}],
+  analyze(c){
+    const s = c.m.start, a = s + 10, b = c.end, dur = Math.max(0, b - s);
+    const ch = {}; for (const f of ["tempC","rh","hPa","uvi","soil"]){
+      const w = inWin(c.rs, a, b).filter(r => f !== "soil" || r.soil >= 0);
+      ch[f] = Object.assign(stats(w.map(r => r[f])), {drift: w.length > 10 ? Math.abs(slope(w.map(r=>r.t), w.map(r=>r[f])))*300 : null});
+    }
+    const soilOn = ch.soil.n > 0;
+    const metrics = [
+      M("Duration", dur, " s", 0, "300 s or more", dur >= 300),
+      M("Temperature SD", ch.tempC.sd, " C", 3, "0.05 C or less", ch.tempC.sd <= 0.05),
+      M("Temperature drift / 5 min", ch.tempC.drift, " C", 2, "0.3 C or less", ch.tempC.drift <= 0.3),
+      M("Humidity SD", ch.rh.sd, " pts", 2, "0.5 or less", ch.rh.sd <= 0.5),
+      M("Humidity drift / 5 min", ch.rh.drift, " pts", 2, "1.5 or less", ch.rh.drift <= 1.5),
+      M("Pressure SD", ch.hPa.sd, " hPa", 3, "0.05 hPa or less", ch.hPa.sd <= 0.05),
+      M("Pressure drift / 5 min", ch.hPa.drift, " hPa", 2),
+      M("UV index SD", ch.uvi.sd, "", 3, "0.01 or less", ch.uvi.sd <= 0.01),
+      M("UV index mean", ch.uvi.mean, "", 3, "0.05 or less", ch.uvi.mean <= 0.05),
+    ];
+    if (soilOn) metrics.push(M("Soil SD", ch.soil.sd, " counts", 1, "3 or less", ch.soil.sd <= 3));
+    const panel = (f, label, unit, d, ms) => ({label, unit, d, minSpan:ms, series:[{pts:pts(inWin(c.rs, s, b), f, s), name:"module"}],
+      bands: ch[f].n ? [{y0:ch[f].mean - 2*ch[f].sd, y1:ch[f].mean + 2*ch[f].sd}] : [], refs: ch[f].n ? [{y:ch[f].mean, color:"--muted"}] : []});
+    const panels = [panel("tempC","Temperature","C",2,0.2), panel("rh","Humidity","%",1,1), panel("hPa","Pressure","hPa",2,0.2), panel("uvi","UV index","",3,0.05)];
+    if (soilOn) panels.push(panel("soil","Soil","counts",0,10));
+    return {metrics, draw:{a: cv => stack(cv, {x0:0, x1:Math.max(60, dur), ph:80, panels, vlines:[{x:10, label:"analysis starts"}]})}};
+  },
+},
+{
+  id:"breath", code:"T2", title:"Breath response", time:"4 min", where:"Desk, indoors",
+  purpose:"A breath is a warm, wet puff of known direction. It proves the humidity and temperature channels respond, and the recovery shows how fast the BME280 forgets a disturbance (its time constant).",
+  need:"Module on the desk, settled. In the enclosure the breath has to go through the vent slots of the BME280 bay.",
+  steps:[
+    {text:"Check the Temperature tile says <b>Settled</b>."},
+    {start:true, text:"Start the test."},
+    {mark:"base", label:"Mark baseline", text:"Keep still for 30 s after marking so the page has a clean baseline."},
+    {mark:"breath", label:"Mark breath", text:"From about 5 cm, breathe one slow breath (about 3 s) across the BME280. Press the button as you start to exhale."},
+    {text:"Step back and keep still for 2 minutes while it recovers. Finish when Time since breath passes 120 s."},
+  ],
+  criteria:["Baseline of at least 20 s before the breath", "Humidity rises 10 points or more (10/20 run: 58 to 92%)", "Temperature rises 0.3 C or more", "Humidity falls back 63% of the way within 90 s of the peak", "Ends within 3 points of baseline after 2 min"],
+  charts:[{id:"a", title:"Humidity and temperature around the breath", legend:[["--s1","Module","line"],["--muted","baseline","dash"]]}],
+  analyze(c){
+    const base = c.m.base, br = c.m.breath, end = c.end;
+    let bl = null, bt = null, dRH = null, dT = null, t63 = null, tPeak = null, fin = null, since = br != null ? end - br : null;
+    if (br != null){
+      const a = Math.max(base ?? br - 30, br - 30);
+      bl = fstat(c.rs, "rh", a, br - 0.5); bt = fstat(c.rs, "tempC", a, br - 0.5);
+      const after = inWin(c.rs, br, br + 60);
+      if (bl.n && after.length){
+        let pk = after[0]; for (const r of after) if (r.rh > pk.rh) pk = r;
+        let pT = -Infinity; for (const r of after) pT = Math.max(pT, r.tempC);
+        dRH = pk.rh - bl.mean; dT = pT - bt.mean; tPeak = pk.t;
+        if (dRH > 2){ const thr = bl.mean + 0.37*dRH; const rec = c.rs.find(r => r.t > pk.t && r.rh <= thr); if (rec) t63 = rec.t - pk.t; }
+        if (since >= 120) fin = fstat(c.rs, "rh", end - 10, end).mean - bl.mean;
+      }
+    }
+    const baseLen = br != null && base != null ? br - base : null;
+    const x0 = br ?? c.m.start, xs = (base ?? c.m.start) - x0;
+    const vl = [{x:0, label:"breath"}]; if (base != null) vl.push({x:base - x0, label:"baseline"});
+    if (tPeak) vl.push({x:tPeak - x0, label:"peak"}); if (t63 != null) vl.push({x:tPeak - x0 + t63, label:"63% back"});
+    const rs = inWin(c.rs, c.m.start, end);
+    return {
+      metrics:[
+        M("Baseline length", baseLen, " s", 0, "20 s or more", baseLen >= 20),
+        M("Time since breath", since, " s", 0, "120 s or more", since >= 120),
+        M("Humidity rise", dRH, " pts", 1, "10 or more", dRH >= 10),
+        M("Temperature rise", dT, " C", 2, "0.3 C or more", dT >= 0.3),
+        M("Humidity 63% recovery", t63, " s", 0, "90 s or less", t63 <= 90),
+        M("End vs baseline, humidity", fin, " pts", 1, "within ±3", fin != null && Math.abs(fin) <= 3),
+      ],
+      draw:{a: cv => stack(cv, {x0:Math.min(xs, -5), x1:Math.max(since ?? 30, 30), ph:120, xLabel:"time from breath, m:ss", vlines:vl,
+        panels:[{label:"Humidity", unit:"%", d:1, minSpan:4, series:[{pts:pts(rs, "rh", x0), name:"humidity"}], refs: bl && bl.n ? [{y:bl.mean, color:"--muted", label:"baseline"}] : []},
+                {label:"Temperature", unit:"C", d:2, minSpan:0.5, series:[{pts:pts(rs, "tempC", x0), name:"temperature"}], refs: bt && bt.n ? [{y:bt.mean, color:"--muted", label:"baseline"}] : []}]})},
+    };
+  },
+},
+{
+  id:"outdoor", code:"T3", title:"Outdoor step and station comparison", time:"20 to 30 min", where:"Indoors, then outside in shade",
+  purpose:"Two results from one walk outside. The step from room air to outdoor air gives the temperature time constant, the time to cover 63% of a sudden change. Once settled, the readings are checked against the NWS station, which is the only independent reference we have for absolute accuracy.",
+  need:"A long USB cable (2 m or more) so the module sits at least 1 m from the laptop and from you. Laptop and body heat kept the 11/3 run 5 C too warm. Open shade about 1 m off the ground (a chair), away from walls, cars and pavement, which all radiate heat.",
+  steps:[
+    {text:"Press <b>Refresh conditions</b> at the top so the station reading is fresh."},
+    {start:true, text:"Start the test indoors with the module settled."},
+    {mark:"in", label:"Mark indoors", text:"Hold still indoors for 60 s after marking."},
+    {mark:"out", label:"Mark outside", text:"Carry it out and set it down in shade, at the full length of the cable from the laptop. Press the moment you set it down."},
+    {text:"Wait at least <b>15 minutes</b>, and until the Temperature tile says <b>Settled</b>. The board drops fast for a minute, then creeps for a long time as its own heat leaks away. Keep yourself and the laptop downwind and back."},
+    {mark:"read", label:"Mark reading", text:"Keep still for 60 s after marking. The page averages that minute."},
+    {text:"Press <b>Refresh conditions</b> again, then Finish. The station reading at Finish is what gets graded."},
+  ],
+  criteria:["At least 15 min outside before Mark reading", "Temperature drifting less than 0.05 C/min over the reading window", "Reading window of at least 50 s", "Temperature within ±3.0 C of the station: a sanity check only. The module is used for site-to-site comparisons against its own baseline, so its noise and drift (T1) matter more than absolute agreement. KCOU is ~13 km away over grass, reports whole degrees, and can be up to two hours old (widened from ±2.0 C on 2026-11-08)", "Humidity within ±10 points of the station (datasheet ±3%; the margin is for distance and age)", "Pressure-implied elevation within ±20 m of your elevation (datasheet ±1 hPa absolute is about ±8 m)", "Time constant recorded, not graded"],
+  charts:[{id:"a", title:"The step outside", legend:[["--s1","Module","line"],["--fit","exponential fit","dash"],["--s2","Station","dash"]]},
+          {id:"b", title:"Module against the station", legend:[["--s1","Module","dot"],["--s2","Station","tick"],["--good","pass band","band"]]}],
+  analyze(c){
+    const m = c.m, end = c.end, ref = c.ref;
+    const Ti = m.in != null && m.out != null ? fstat(c.rs, "tempC", m.in + 5, m.out - 2) : null;
+    const rd = m.read, rEnd = rd != null ? Math.min(end, rd + 60) : null, rLen = rd != null ? rEnd - rd : null;
+    const mod = f => rd != null && rLen > 5 ? fstat(c.rs, f, rd, rEnd).mean : null;
+    const T = mod("tempC"), RH = mod("rh"), P = mod("hPa");
+    const Tf = T ?? (m.out != null ? fstat(c.rs, "tempC", end - 30, end).mean : null);
+    let tau = null;
+    if (Ti && Ti.n && Tf != null && m.out != null && Math.abs(Ti.mean - Tf) >= 1){
+      const thr = 0.37*Math.abs(Ti.mean - Tf);
+      const hit = c.rs.find(r => r.t > m.out && Math.abs(r.tempC - Tf) <= thr);
+      if (hit) tau = hit.t - m.out;
+    }
+    const impl = P != null && ref.alt != null ? impliedElev(P, ref.alt) : null;
+    const age = ref.obsT && rd != null ? (rd - ref.obsT)/60 : null;
+    const soak = rd != null && m.out != null ? (rd - m.out)/60 : null;
+    const rw = rd != null ? inWin(c.rs, rd, rEnd) : [];
+    const drift = rw.length > 10 ? slope(rw.map(r => r.t), rw.map(r => r.tempC))*60 : null;
+    const dM = dewPt(T, RH), dS = dewPt(ref.tempC, ref.rh);
+    const metrics = [
+      M("Time outside before reading", soak, " min", 1, "15 min or more", soak >= 15),
+      M("Temperature drift in reading window", drift, " C/min", 3, "under 0.05", Math.abs(drift) < 0.05),
+      M("Reading window", rLen, " s", 0, "50 s or more", rLen >= 50),
+      M("Indoor temperature", Ti && Ti.n ? Ti.mean : null, " C", 2),
+      M("Outdoor temperature", T, " C", 2),
+      M("Station temperature", ref.tempC, " C", 1),
+      M("Temperature vs station", T != null && ref.tempC != null ? T - ref.tempC : null, " C", 2, "within ±3.0 C", Math.abs(T - ref.tempC) <= 3),
+      M("Humidity vs station", RH != null && ref.rh != null ? RH - ref.rh : null, " pts", 1, "within ±10", Math.abs(RH - ref.rh) <= 10),
+      M("Dew point, module minus station (not graded: near 0 with temperature high means the board is warm, not the air)", dM != null && dS != null ? dM - dS : null, " C", 1),
+      M("Sea-level pressure, module", P != null ? toSeaLevel(P, c.elev.h) : null, " hPa", 1),
+      M("Sea-level pressure, station", ref.alt, " hPa", 1),
+      M(`Implied elevation (yours: ${Math.round(c.elev.h)} m, ${c.elev.src})`, impl, " m", 0, "within ±20 m", Math.abs(impl - c.elev.h) <= 20),
+      M("Time constant, 63% of the step", tau, " s", 0),
+      M("Station observation age at reading", age, " min", 0),
+    ];
+    const x0 = m.in ?? m.start, rs = inWin(c.rs, m.start, end);
+    const fit = [];
+    if (tau && Ti && Tf != null){ const t1 = (rd ?? end); for (let t = m.out; t <= t1; t += Math.max(1, (t1 - m.out)/200)) fit.push([t - x0, Tf + (Ti.mean - Tf)*Math.exp(-(t - m.out)/tau)]); }
+    const vl = markLines(c, x0, {in:"indoors", out:"outside", read:"reading"});
+    if (tau) vl.push({x:m.out - x0 + tau, label:"63%"});
+    return {
+      metrics,
+      draw:{
+        a: cv => stack(cv, {x0:Math.min(0, m.start - x0), x1:Math.max(60, end - x0), ph:120, vlines:vl, xLabel:"time from Mark indoors, m:ss",
+          panels:[{label:"Temperature", unit:"C", d:2, minSpan:1, series:[{pts:pts(rs, "tempC", x0), name:"module"}, ...(fit.length ? [{pts:fit, color:"--fit", dash:true, width:1.5, name:"fit"}] : [])],
+                   refs:[{y:ref.tempC, label:`station ${num(ref.tempC,1)} C`}]},
+                  {label:"Humidity", unit:"%", d:1, minSpan:4, series:[{pts:pts(rs, "rh", x0), name:"module"}], refs:[{y:ref.rh, label:`station ${num(ref.rh,0)} %`}]}]}),
+        b: cv => compare(cv, [
+          {label:"Temperature", unit:"C", d:1, tol:2, mod:T, ref:ref.tempC, refName:ref.tempSrc},
+          {label:"Humidity", unit:"%", d:0, tol:10, mod:RH, ref:ref.rh, refName:ref.tempSrc},
+          {label:"Elevation from pressure", unit:"m", d:0, tol:20, mod:impl, ref:c.elev.h, refName:"yours"},
+        ]),
+      },
+    };
+  },
+},
+{
+  id:"stairs", code:"T4", title:"Stairs: relative pressure", time:"8 min", where:"A stairwell",
+  purpose:"Pressure drops about 0.11 hPa per metre you climb. Walking up a floor is a known, repeatable height change, so it checks the pressure channel's relative accuracy without needing any station at all.",
+  need:"Laptop and module together on the cable, a stairwell with at least one floor. Do it in under 5 minutes: weather drifts pressure about 0.1 hPa per 10 min, which looks like 1 m.",
+  steps:[
+    {start:true, text:"Start the test at the bottom of the stairs."},
+    {mark:"g0", label:"Mark ground", text:"Hold the module still at chest height and keep it there for 30 s."},
+    {mark:"f1", label:"Mark 1 floor up", text:"Walk up one floor, same height on your body. Mark and hold 30 s."},
+    {mark:"f2", label:"Mark 2 floors up", text:"Optional: one more floor. Mark and hold 30 s."},
+    {mark:"g1", label:"Mark back at ground", text:"Walk back down. Mark, hold 30 s, then Finish."},
+  ],
+  criteria:["Each floor climbs 2.5 to 4.5 m (typical floor-to-floor is 3 to 3.5 m)", "Back at ground within ±1.0 m of the start (datasheet relative accuracy ±0.12 hPa is about ±1 m)", "Ground to ground in 6 minutes or less"],
+  charts:[{id:"a", title:"Height above the starting point, from pressure", legend:[["--s1","Module","line"],["--s2","30 s level averages","dash"]]}],
+  analyze(c){
+    const m = c.m, lv = k => phaseStat(c, k, "hPa", 8, 28, 10);
+    const L = {g0:lv("g0"), f1:lv("f1"), f2:lv("f2"), g1:lv("g1")};
+    const T = fstat(c.rs, "tempC", m.start, c.end).mean ?? 20;
+    const p0 = L.g0 ? L.g0.mean : null, h = k => p0 != null && L[k] ? dHeight(p0, L[k].mean, T) : null;
+    const r1 = h("f1"), r2 = h("f2") != null && r1 != null ? h("f2") - r1 : null, ret = h("g1");
+    const span = m.g0 != null && m.g1 != null ? m.g1 - m.g0 : null;
+    const metrics = [
+      M("Floor 1 rise", r1, " m", 2, "2.5 to 4.5 m", r1 >= 2.5 && r1 <= 4.5),
+      M("Back at ground", ret, " m", 2, "within ±1.0 m", Math.abs(ret) <= 1),
+      M("Ground to ground", span, " s", 0, "360 s or less", span <= 360),
+    ];
+    if (m.f2 != null) metrics.splice(1, 0, M("Floor 2 rise", r2, " m", 2, "2.5 to 4.5 m", r2 >= 2.5 && r2 <= 4.5));
+    const x0 = m.start, rs = inWin(c.rs, m.start, c.end);
+    const hp = p0 != null ? rs.map(r => [r.t - x0, dHeight(p0, r.hPa, T)]) : [];
+    const segs = Object.keys(L).filter(k => L[k]).map(k => ({pts:[[L[k].a - x0, h(k)], [L[k].b - x0, h(k)]], color:"--s2", width:3, name:k}));
+    return {metrics, draw:{a: cv => stack(cv, {x0:0, x1:Math.max(60, c.end - x0), ph:200,
+      vlines:markLines(c, x0, {g0:"ground", f1:"1 up", f2:"2 up", g1:"ground"}),
+      panels:[{label:"Height above start", unit:"m", d:2, minSpan:2, series:[{pts:hp, name:"height"}, ...segs]}]})}};
+  },
+},
+{
+  id:"uv", code:"T5", title:"UV response", time:"10 min", where:"Indoors, then outside", needs:"daylight",
+  purpose:"Walks the LTR390 through four known light levels: none indoors, sky light in shade, full sun, and a hand over it. Zero has to read zero, sun has to beat shade, and it must not saturate. The sun reading is also compared to the forecast UV index.",
+  need:"A sunny window between about 10 am and 3 pm. Nothing clear over the sensor: acrylic blocks the band it reads.",
+  steps:[
+    {text:"Check the UV index in Current conditions. Under 1 there is not enough sun to test."},
+    {start:true, text:"Start the test indoors, away from windows."},
+    {mark:"indoor", label:"Mark indoors", text:"Hold 30 s."},
+    {mark:"shade", label:"Mark shade", text:"Outside in open shade: sky visible, no direct sun on the sensor. Hold 30 s."},
+    {mark:"sun", label:"Mark sun", text:"Into direct sun, sensor face pointing straight up. Hold 30 s."},
+    {mark:"cover", label:"Mark covered", text:"Cover the sensor fully with your hand. Hold 15 s, then Finish."},
+  ],
+  criteria:["Indoors 0.05 or less", "Covered 0.05 or less", "Sun higher than shade", "Sun 0.5 or more when the forecast UV index is 1 or more", "Never above 400 (18x gain saturates near 450)", "Sun ÷ forecast is recorded, not graded: on 10/21 it read 2.5 to 3x high, cause not yet separated"],
+  charts:[{id:"a", title:"UV index through the four phases", legend:[["--s1","Module","line"],["--s2","Forecast UV index (Open-Meteo)","dash"]]},
+          {id:"b", title:"Phase averages", legend:[["--s1","mean, with low-to-high whisker","dot"],["--s2","forecast","dash"]]}],
+  analyze(c){
+    const ph = k => phaseStat(c, k, "uvi", 5, k === "cover" ? 20 : 35, 5);
+    const P = {indoor:ph("indoor"), shade:ph("shade"), sun:ph("sun"), cover:ph("cover")};
+    const ref = c.ref.uvi, mx = c.rs.length ? minmax(c.rs.filter(r => r.t >= c.m.start).map(r => r.uvi))[1] : null;
+    const v = k => P[k] ? P[k].mean : null;
+    const metrics = [
+      M("Forecast UV index", ref, "", 2),
+      M("Indoors", v("indoor"), "", 3, "0.05 or less", v("indoor") <= 0.05),
+      M("Shade", v("shade"), "", 2),
+      M("Sun", v("sun"), "", 2, ref >= 1 ? "0.5 or more" : "needs forecast 1+", ref >= 1 ? v("sun") >= 0.5 : null),
+      M("Sun higher than shade", v("sun") != null && v("shade") != null ? (v("sun") > v("shade") ? "yes" : "no") : null, "", 0, "yes", v("sun") > v("shade")),
+      M("Covered", v("cover"), "", 3, "0.05 or less", v("cover") <= 0.05),
+      M("Highest reading", mx === -Infinity ? null : mx, "", 2, "400 or less", mx <= 400),
+      M("Sun ÷ forecast", v("sun") != null && ref >= 0.5 ? v("sun")/ref : null, "x", 2),
+    ];
+    const x0 = c.m.start, rs = inWin(c.rs, x0, c.end), labels = {indoor:"indoors", shade:"shade", sun:"sun", cover:"covered"};
+    return {
+      metrics, warn: ref != null && ref < 1 ? `Forecast UV index is ${num(ref,2)}. Run this test in daylight with a UV index of 1 or more; the sun check cannot pass now.` : "",
+      draw:{
+        a: cv => stack(cv, {x0:0, x1:Math.max(60, c.end - x0), ph:170, vbands:phaseBands(c, x0, labels),
+          panels:[{label:"UV index", unit:"", d:2, minSpan:0.5, series:[{pts:pts(rs, "uvi", x0), name:"UV index"}], refs:[{y:ref, label:`forecast ${num(ref,1)}`}]}]}),
+        b: cv => catDots(cv, {yLabel:"UV index", d:2, yMin:0, cats:Object.keys(labels).map(k => ({label:labels[k], v:v(k), lo:P[k] && P[k].min, hi:P[k] && P[k].max, n:P[k] && P[k].n})),
+          refs:[{y:ref, label:"forecast"}]}),
+      },
+    };
+  },
+},
+{
+  id:"sun", code:"T6", title:"Sun loading on the air sensor", time:"15 min", where:"Outside, shade then sun", needs:"daylight",
+  purpose:"Sunlight heats the sensor's own circuit board, so it reports a temperature hotter than the air. On 10/21 the bare BME280 read 4 C high. This measures how much of that error the vented bay (and later the louvre shield) removes.",
+  need:"Steady direct sun. Set Configuration under Session to what is actually on the bench, because the result means different things for each.",
+  steps:[
+    {start:true, text:"Start the test with the module outside in shade."},
+    {mark:"shade", label:"Mark shade", text:"Wait until Temperature says <b>Settled</b>, then mark. Hold 60 s."},
+    {mark:"sun", label:"Mark into sun", text:"Move it into direct sun at the same height. Mark as you set it down."},
+    {mark:"sunread", label:"Mark sun reading", text:"Wait at least 5 minutes, or until Settled. Mark, hold 60 s, then Finish."},
+  ],
+  criteria:["At least 5 min in the sun before the reading", "Sun minus shade 1.0 C or less. Bare boards are expected to fail this (+4 C on 10/21); the enclosure should pass"],
+  charts:[{id:"a", title:"Temperature and UV, shade then sun", legend:[["--s1","Module","line"],["--s2","Station","dash"]]}],
+  analyze(c){
+    const m = c.m;
+    const sh = m.shade != null ? fstat(c.rs, "tempC", m.shade, Math.min(m.shade + 60, (m.sun ?? Infinity) - 1, c.end)) : null;
+    const sr = m.sunread != null ? fstat(c.rs, "tempC", m.sunread, Math.min(m.sunread + 60, c.end)) : null;
+    const wait = m.sun != null && m.sunread != null ? m.sunread - m.sun : null;
+    const d = sh && sr && sh.n > 5 && sr.n > 5 ? sr.mean - sh.mean : null;
+    const x0 = m.start, rs = inWin(c.rs, x0, c.end), labels = {shade:"shade", sun:"sun", sunread:"sun reading"};
+    return {
+      metrics:[
+        M("Configuration", c.config === "bare" ? "bare boards" : "enclosure", "", 0),
+        M("Time in sun before reading", wait, " s", 0, "300 s or more", wait >= 300),
+        M("Shade temperature", sh && sh.n ? sh.mean : null, " C", 2),
+        M("Sun temperature", sr && sr.n ? sr.mean : null, " C", 2),
+        M("Sun minus shade", d, " C", 2, "1.0 C or less", d <= 1.0),
+        M("Station temperature", c.ref.tempC, " C", 1),
+      ],
+      warn: c.ref.isDay === false ? "Sun is down. This test needs steady direct sun." : "",
+      draw:{a: cv => stack(cv, {x0:0, x1:Math.max(60, c.end - x0), ph:120, vbands:phaseBands(c, x0, labels),
+        panels:[{label:"Temperature", unit:"C", d:2, minSpan:1, series:[{pts:pts(rs, "tempC", x0), name:"module"}], refs:[{y:c.ref.tempC, label:`station ${num(c.ref.tempC,1)} C`}]},
+                {label:"UV index (shows when it was really in sun)", unit:"", d:2, minSpan:0.5, series:[{pts:pts(rs, "uvi", x0), name:"UV index"}]}]})},
+    };
+  },
+},
+{
+  id:"soil", code:"T7", title:"STEMMA soil sensor: range and repeatability", time:"10 min", where:"Desk",
+  purpose:"Checks the capacitive soil sensor spans air to water and lands in the same place when reinserted. If three reinsertions in the same water scatter as much as the gap between two soils, it cannot tell sites apart. Skip this card if the Soil tile reads absent.",
+  need:"A cup of tap water, a cup of dry soil, a paper towel. Never push the sensor past its white line: the electronics above it are not waterproof.",
+  steps:[
+    {start:true, text:"Start the test."},
+    {mark:"air", label:"Mark air", text:"Hold the sensor in open air, touching nothing. Hold 20 s."},
+    {mark:"dry", label:"Mark dry soil", text:"Push it into the dry soil up to the line. Hold 20 s."},
+    {mark:"w1", label:"Mark water 1", text:"Wipe it off. Into the water up to the line. Hold 20 s."},
+    {mark:"w2", label:"Mark water 2", text:"Pull it out, shake it, put it back. Hold 20 s."},
+    {mark:"w3", label:"Mark water 3", text:"Once more. Hold 20 s."},
+    {mark:"air2", label:"Mark air again", text:"Dry it with the towel and hold it in air for 20 s, then Finish."},
+  ],
+  criteria:["Air between 300 and 420 counts (first read 356 to 360)", "Water minus air 300 counts or more", "Three water reinsertions with SD 15 counts or less", "Air returns within 20 counts of the first air reading"],
+  charts:[{id:"a", title:"Counts through the phases", legend:[["--s1","Module","line"]]},
+          {id:"b", title:"Phase averages on the sensor's full 200 to 2000 range", legend:[["--s1","mean, with low-to-high whisker","dot"]]}],
+  analyze(c){
+    const live = inWin(c.rs, c.m.start, c.end), absent = live.length > 5 && !live.some(r => r.soil >= 0);
+    const ph = k => phaseStat(c, k, "soil", 5, 25, 5), labels = {air:"air", dry:"dry soil", w1:"water 1", w2:"water 2", w3:"water 3", air2:"air again"};
+    const P = {}; for (const k in labels) P[k] = ph(k);
+    const v = k => P[k] ? P[k].mean : null;
+    const ws = ["w1","w2","w3"].map(v).filter(x => x != null), wst = stats(ws);
+    const metrics = [
+      M("Air", v("air"), " counts", 0, "300 to 420", v("air") >= 300 && v("air") <= 420),
+      M("Dry soil", v("dry"), " counts", 0),
+      M("Water, mean of reinsertions", wst.mean, " counts", 0),
+      M("Water minus air", wst.mean != null && v("air") != null ? wst.mean - v("air") : null, " counts", 0, "300 or more", wst.mean - v("air") >= 300),
+      M("Water reinsertion SD", ws.length === 3 ? wst.sd : null, " counts", 1, "15 or less", wst.sd <= 15),
+      M("Air return", v("air2") != null && v("air") != null ? v("air2") - v("air") : null, " counts", 0, "within ±20", Math.abs(v("air2") - v("air")) <= 20),
+    ];
+    const x0 = c.m.start;
+    return {
+      metrics, warn: absent ? "The board reports soil -1: no STEMMA sensor at 0x36. Plug it in at the end of the chain, or Skip this card." : "",
+      draw:{
+        a: cv => stack(cv, {x0:0, x1:Math.max(60, c.end - x0), ph:170, vbands:phaseBands(c, x0, labels),
+          panels:[{label:"Soil", unit:"counts", d:0, minSpan:40, series:[{pts:pts(live, "soil", x0), name:"soil"}]}]}),
+        b: cv => catDots(cv, {yLabel:"counts", d:0, yMin:200, yMax:2000, cats:Object.keys(labels).map(k => ({label:labels[k], v:v(k), lo:P[k] && P[k].min, hi:P[k] && P[k].max, n:P[k] && P[k].n}))}),
+      },
+    };
+  },
+},
+{
+  id:"soak", code:"T8", title:"Soak run against the station", time:"1 hour or more", where:"Outside, sheltered", optional:true,
+  purpose:"Leaves the module outside next to nothing but weather. Each new station observation becomes a comparison point, so a long run shows whether the module tracks real conditions or drifts, and how big its standing offset is.",
+  need:"A spot outside sheltered from sun and rain (shaded porch or balcony). Laptop on its charger and kept awake.",
+  steps:[
+    {text:"Keep the laptop awake: in Terminal run <code>caffeinate -d</code> and leave it open. Keep this tab visible."},
+    {start:true, text:"Start the test and leave everything alone."},
+    {text:"Conditions refresh on their own every 10 minutes. The station usually reports once an hour, so expect about one comparison point per hour."},
+    {text:"Finish after at least an hour. Overnight is better: it catches cooling and dew."},
+  ],
+  criteria:["At least 60 min", "At least 3 station observations to compare against", "Mean temperature offset within ±3 C (sanity check; the SD below is the real test)", "Temperature offset SD 1 C or less (it tracks rather than drifts)", "Mean humidity offset within ±10 points"],
+  charts:[{id:"a", title:"Module against each station observation", legend:[["--s1","Module","line"],["--s2","Station observation","dot"]]}],
+  analyze(c){
+    const s = c.m.start, end = c.end, dur = end - s;
+    const seen = new Set(), obs = [];
+    for (const w of c.wlog) if (w.obsT && w.obsT >= s - 300 && w.obsT <= end && !seen.has(w.obsT) && w.tempC != null){ seen.add(w.obsT); obs.push(w); }
+    const pairs = [];
+    for (const o of obs){ const T = fstat(c.rs, "tempC", o.obsT - 300, o.obsT + 300), H = fstat(c.rs, "rh", o.obsT - 300, o.obsT + 300); if (T.n >= 20) pairs.push({o, dT:T.mean - o.tempC, dRH:o.rh != null ? H.mean - o.rh : null}); }
+    const sT = stats(pairs.map(p => p.dT)), sH = stats(pairs.filter(p => p.dRH != null).map(p => p.dRH));
+    const rs = inWin(c.rs, s, end);
+    return {
+      metrics:[
+        M("Duration", dur/60, " min", 0, "60 min or more", dur >= 3600),
+        M("Station points paired", pairs.length, "", 0, "3 or more", pairs.length >= 3),
+        M("Mean temperature offset", pairs.length ? sT.mean : null, " C", 2, "within ±3 C", Math.abs(sT.mean) <= 3),
+        M("Temperature offset SD", pairs.length >= 2 ? sT.sd : null, " C", 2, "1 C or less", sT.sd <= 1),
+        M("Mean humidity offset", sH.n ? sH.mean : null, " pts", 1, "within ±10", Math.abs(sH.mean) <= 10),
+      ],
+      draw:{a: cv => stack(cv, {x0:0, x1:Math.max(600, dur), ph:130, xLabel:"time since start, h:mm:ss",
+        panels:[{label:"Temperature", unit:"C", d:2, minSpan:1, series:[{pts:pts(rs, "tempC", s), name:"module", gap:60}, {pts:obs.map(o => [o.obsT - s, o.tempC]), color:"--s2", dots:true, name:"station"}]},
+                {label:"Humidity", unit:"%", d:1, minSpan:5, series:[{pts:pts(rs, "rh", s), name:"module", gap:60}, {pts:obs.filter(o => o.rh != null).map(o => [o.obsT - s, o.rh]), color:"--s2", dots:true, name:"station"}]}]})},
+    };
+  },
+},
+];
+const TBY = Object.fromEntries(TESTS.map(t => [t.id, t]));
+
+// ---------- running a test ----------
+function running(){ return TESTS.find(d => tstate(d.id).status === "running"); }
+function latestT(){ return rows.length ? rows[rows.length-1].t : null; }
+function liveData(){ return source && rows.length && Date.now() - lastRowAt < 3000; }
+
+function ctxFor(d){
+  const st = tstate(d.id), f = st.frozen, start = st.marks.start;
+  if (f) return {rs:f.rows, m:st.marks, end:f.end, ref:f.ref, wlog:f.wlog, elev:f.elev, config:f.config, bad:f.bad};
+  return {rs: start != null ? rows.filter(r => r.t >= start - 1) : [], m:st.marks, end: latestT() ?? nowS(), ref:refNow(), wlog:S.wlog,
+          elev:elevNow(), config:S.session.config, bad: start != null ? badLines.filter(t => t >= start) : []};
+}
+function verdict(metrics){
+  if (metrics.some(m => m.lim && m.ok === false)) return "fail";
+  if (metrics.some(m => m.lim && m.ok == null)) return "incomplete";
+  return "pass";
+}
+function startTest(id){
+  const r = running();
+  if (r && r.id !== id){ cardAlert(id, `${r.code} is still running. Finish it first.`); return; }
+  if (!liveData()){ cardAlert(id, "No live data. Connect the board (or start Fake data) first."); return; }
+  const st = tstate(id);
+  Object.assign(st, {status:"running", marks:{start:latestT()}, frozen:null, result:null});
+  save(); updateAll();
+}
+function finishTest(id){
+  const st = tstate(id), d = TBY[id]; if (st.status !== "running") return;
+  const c = ctxFor(d), res = d.analyze(c);
+  const wl = c.wlog.filter(w => w.obsT && w.obsT >= st.marks.start - 600);
+  st.frozen = {rows:downsample(c.rs, 4000).map(r => ({t:r.t, clock:r.clock, ms:r.ms, tempC:r.tempC, rh:r.rh, hPa:r.hPa, uvi:r.uvi, soil:r.soil})),
+               end:c.end, ref:c.ref, wlog:wl, elev:c.elev, config:c.config, bad:c.bad};
+  st.status = verdict(res.metrics);
+  st.result = res.metrics.map(m => ({k:m.k, v:m.v, unit:m.unit, d:m.d, lim:m.lim, ok:m.ok}));
+  st.finishedAt = new Date().toISOString();
+  save(); updateAll();
+}
+function resetTest(id){
+  const st = tstate(id);
+  if (st.status !== "idle" && !confirm(`Reset ${TBY[id].code}? Its marks and frozen data are deleted.`)) return;
+  S.tests[id] = {status:"idle", marks:{}, checks:{}, notes:st.notes || ""};
+  save(); updateAll();
+}
+function skipTest(id){ const st = tstate(id); if (st.status === "running") return; st.status = "skipped"; save(); updateAll(); }
+function markTest(id, key){
+  const st = tstate(id); if (st.status !== "running") return;
+  if (!liveData()){ cardAlert(id, "No live data right now: the mark would not line up with readings."); return; }
+  st.marks[key] = latestT(); save(); updateCard(id);
+}
+function cardAlert(id, msg){ const el = $("al-" + id); if (el){ el.textContent = msg; el.scrollIntoView({block:"nearest"}); } }
+
+// ---------- rendering ----------
+const STATUS = {idle:["Not run","--muted"], running:["Running","--warn"], pass:["PASS","--good"], fail:["FAIL","--bad"], incomplete:["Incomplete","--warn"], skipped:["Skipped","--muted"]};
+function legendHtml(lg){
+  return (lg || []).map(([c, label, kind]) => {
+    const i = kind === "dash" || kind === "tick" ? `<i class="d" style="border-color:var(${c})"></i>` : kind === "dot" ? `<i class="o" style="background:var(${c})"></i>`
+      : kind === "band" ? `<i style="background:var(${c});opacity:.25;height:10px"></i>` : `<i style="background:var(${c})"></i>`;
+    return `<span class="lg">${i}${esc(label)}</span>`;
+  }).join("");
+}
+function buildCards(){
+  $("cards").innerHTML = TESTS.map(d => `
+  <section class="panel span2 card" id="card-${d.id}">
+    <div class="card-head">
+      <div><h2>${d.code} &middot; ${esc(d.title)}${d.optional ? ' <span class="muted" style="font-weight:400">(optional)</span>' : ""}</h2>
+        <div class="small">${d.time} &middot; ${esc(d.where)}${d.needs ? ` &middot; <span class="need">needs ${d.needs}</span>` : ""}</div></div>
+      <div class="status" id="st-${d.id}"></div>
+    </div>
+    <div class="card-grid">
+      <div>
+        <p>${d.purpose}</p>
+        <p class="small"><b>You need:</b> ${d.need}</p>
+        <ol class="steps">${d.steps.map((s, i) => `<li><div>${
+          s.mark ? `<div>${s.text}</div><div class="act"><button class="mark" data-test="${d.id}" data-mark="${s.mark}">${s.label}</button><span class="mt" id="mt-${d.id}-${s.mark}"></span></div>`
+          : s.start ? `<div>${s.text}</div><div class="act"><button class="primary" data-act="start" data-test="${d.id}">Start test</button><span class="mt" id="mt-${d.id}-start"></span></div>`
+          : `<label class="chk"><input type="checkbox" data-test="${d.id}" data-check="${i}"><span>${s.text}</span></label>`}</div></li>`).join("")}</ol>
+        <div class="crit"><b>Passes when</b><ul>${d.criteria.map(x => `<li>${x}</li>`).join("")}</ul></div>
+        <div class="row ctl">
+          <button class="primary" data-act="finish" data-test="${d.id}">Finish</button>
+          <button data-act="reset" data-test="${d.id}">Reset</button>
+          <button data-act="skip" data-test="${d.id}">Skip</button>
+          <button data-act="data" data-test="${d.id}">Save this test's data</button>
+        </div>
+      </div>
+      <div>
+        <div class="alert" id="al-${d.id}"></div>
+        <div class="scroll"><table id="mt-${d.id}"></table></div>
+        ${d.charts.map(ch => `<div class="chart"><div class="ctitle">${esc(ch.title)} ${legendHtml(ch.legend)}</div><canvas id="cv-${d.id}-${ch.id}"></canvas><div class="tip"></div></div>`).join("")}
+        <label class="small" style="display:block;margin-top:12px">Notes<textarea id="nt-${d.id}" rows="2" data-test="${d.id}" placeholder="what you did differently, what you saw"></textarea></label>
+      </div>
+    </div>
+  </section>`).join("");
+}
+function metricRows(ms){
+  return "<tr><th>Measure</th><th>Value</th><th>Limit</th><th>Result</th></tr>" + ms.map(m => {
+    const v = m.v == null ? "--" : typeof m.v === "string" ? esc(m.v) : m.v.toFixed(m.d) + esc(m.unit);
+    const r = !m.lim ? '<span class="muted">info</span>' : m.ok == null ? '<span class="muted">waiting</span>'
+      : `<span class="tag" style="color:var(${m.ok ? "--good" : "--bad"});font-weight:600">${m.ok ? "PASS" : "FAIL"}</span>`;
+    return `<tr><td class="l">${esc(m.k)}</td><td class="mono">${v}</td><td class="small">${esc(m.lim || "")}</td><td>${r}</td></tr>`;
+  }).join("");
+}
+function updateCard(id){
+  const d = TBY[id], st = tstate(id), run = st.status === "running";
+  const card = $("card-" + id); card.classList.toggle("running", run);
+  const [label, col] = STATUS[st.status];
+  const el = $("st-" + id);
+  el.innerHTML = `<span class="dot" style="background:var(${col})"></span>${label}${run && rows.length ? " " + fmtDur((latestT() ?? st.marks.start) - st.marks.start) : ""}${st.finishedAt && !run ? `<span class="small" style="font-weight:400">&nbsp;${new Date(st.finishedAt).toLocaleString([], {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"})}</span>` : ""}`;
+  card.querySelectorAll("button.mark").forEach(b => { b.disabled = !run; b.classList.toggle("done", st.marks[b.dataset.mark] != null); });
+  card.querySelectorAll('[data-act="start"]').forEach(b => b.disabled = run);
+  card.querySelector('[data-act="finish"]').disabled = !run;
+  card.querySelector('[data-act="skip"]').disabled = run;
+  card.querySelector('[data-act="data"]').disabled = !st.frozen;
+  for (const k of Object.keys(st.marks)){
+    const m = $(`mt-${id}-${k}`);
+    if (m) m.textContent = k === "start" ? "started " + new Date(st.marks.start*1000).toLocaleTimeString([], {hour:"numeric", minute:"2-digit", second:"2-digit"}) : "at " + fmtDur(st.marks[k] - st.marks.start);
+  }
+  card.querySelectorAll("[id^='mt-" + id + "-']").forEach(m => { const k = m.id.slice(("mt-" + id + "-").length); if (st.marks[k] == null) m.textContent = ""; });
+  card.querySelectorAll("input[type=checkbox]").forEach(cb => cb.checked = !!st.checks[cb.dataset.check]);
+  const nt = $("nt-" + id); if (document.activeElement !== nt) nt.value = st.notes || "";
+  if (st.status === "idle" || st.status === "skipped"){
+    $("mt-" + id).innerHTML = ""; $("al-" + id).textContent = st.status === "skipped" ? "Skipped." : "";
+    for (const ch of d.charts){ const cv = $(`cv-${id}-${ch.id}`); const {g, w} = prep(cv, 120); g.fillStyle = css("--muted"); g.font = "14px system-ui"; g.textAlign = "center"; g.fillText(st.status === "skipped" ? "Skipped" : "Graphs fill in once the test starts", w/2, 60); cv._redraw = null; }
+    return;
+  }
+  const res = d.analyze(ctxFor(d));
+  $("mt-" + id).innerHTML = metricRows(res.metrics);
+  const al = $("al-" + id); if (res.warn) al.textContent = res.warn; else if (!al.dataset.sticky) al.textContent = "";
+  for (const ch of d.charts) res.draw[ch.id]($(`cv-${id}-${ch.id}`));
+}
+function renderIndex(){
+  const counts = {pass:0, fail:0, incomplete:0, skipped:0};
+  $("index").innerHTML = TESTS.map(d => {
+    const st = tstate(d.id), [label, col] = STATUS[st.status]; if (counts[st.status] != null) counts[st.status]++;
+    return `<a href="#card-${d.id}"><span><b>${d.code}</b> ${esc(d.title)}</span><span class="small" style="white-space:nowrap"><span class="dot" style="background:var(${col})"></span> ${label}</span></a>`;
+  }).join("");
+  $("idxSummary").textContent = `${counts.pass} pass · ${counts.fail} fail · ${counts.incomplete} incomplete · ${counts.skipped} skipped · ${TESTS.length - counts.pass - counts.fail - counts.incomplete - counts.skipped} to go`;
+}
+function updateAll(){ for (const d of TESTS) updateCard(d.id); renderIndex(); if (typeof renderRetest === "function") renderRetest(); }
+
+// ---------- live readout ----------
+function tick(){
+  const last = rows[rows.length-1], age = (Date.now() - lastRowAt)/1000, live = source && last && age < 3;
+  $("linkDot").style.background = live ? css("--good") : source ? css("--warn") : "#6b7076";
+  $("linkText").textContent = !source ? "Not connected" : !last ? "Waiting for first line" : `${source === "fake" ? "Fake data" : "Board"} · ${rows.length} lines · last ${age.toFixed(1)} s ago`;
+  const ref = refNow(), e = elevNow();
+  if (last){
+    $("vT").textContent = last.tempC.toFixed(2); $("vRH").textContent = last.rh.toFixed(1);
+    $("vP").textContent = last.hPa.toFixed(2); $("vUV").textContent = last.uvi.toFixed(2);
+    $("vS").textContent = last.soil >= 0 ? last.soil : "absent";
+    $("rT").textContent = ref.tempC != null ? `station ${num(ref.tempC,1)} C, module ${sgn(last.tempC - ref.tempC, 1)}` : "";
+    $("rRH").textContent = ref.rh != null ? `station ${num(ref.rh,0)} %, module ${sgn(last.rh - ref.rh, 0)}` : "";
+    $("rP").textContent = `${num(toSeaLevel(last.hPa, e.h),1)} at sea level (${Math.round(e.h)} m)${ref.alt != null ? `, station ${num(ref.alt,1)}` : ""}`;
+    $("rUV").textContent = ref.uvi != null ? `forecast ${num(ref.uvi,1)} now` : "";
+    $("rS").textContent = last.soil >= 0 ? "air ~358, water ~1010" : "no sensor at 0x36";
+  }
+  const s = settleT(), chip = $("settleT");
+  chip.querySelector(".dot").style.background = css(s.state === "settled" ? "--good" : s.state === "settling" ? "--warn" : "--muted");
+  chip.lastElementChild.textContent = s.state === "settled" ? `Settled · ${sgn(s.slope,2)} C/min` : s.state === "settling" ? `Settling · ${sgn(s.slope,2)} C/min` : "Waiting for 2 min of data";
+  const r = running();
+  $("runBanner").innerHTML = r ? `<a href="#card-${r.id}" style="color:var(--ink)"><b>${r.code} running</b> &middot; ${esc(r.title)}</a>` : "No test running";
+  drawLive(r);
+  apPulse();       // also keeps the autopilot moving when no data is arriving (waiting for sun, lost cable)
+}
+function drawLive(r){
+  const cv = $("live");
+  if (!rows.length){ const {g, w} = prep(cv, 160); g.fillStyle = css("--muted"); g.font = "14px system-ui"; g.textAlign = "center"; g.fillText("Connect the board or start Fake data", w/2, 80); cv._redraw = null; return; }
+  const data = recent(WINDOW_S), tEnd = data[data.length-1].t, ref = refNow();
+  const p = f => data.filter(q => f !== "soil" || q.soil >= 0).map(q => [q.t - tEnd, q[f]]);
+  const panels = [
+    {label:"Temperature", unit:"C", d:2, minSpan:0.5, series:[{pts:p("tempC"), name:"temperature"}], refs:[{y:ref.tempC, noScale:true}]},
+    {label:"Humidity", unit:"%", d:1, minSpan:3, series:[{pts:p("rh"), name:"humidity"}], refs:[{y:ref.rh, noScale:true}]},
+    {label:"Pressure at the sensor", unit:"hPa", d:2, minSpan:0.3, series:[{pts:p("hPa"), name:"pressure"}]},
+    {label:"UV index", unit:"", d:2, minSpan:0.2, series:[{pts:p("uvi"), name:"UV index"}]},
+  ];
+  if (data.some(q => q.soil >= 0)) panels.push({label:"Soil", unit:"counts", d:0, minSpan:20, series:[{pts:p("soil"), name:"soil"}]});
+  // station lines only when they would sit inside the plotted range, so they never squash the module trace
+  for (const P of panels.slice(0,2)){ const [lo, hi] = minmax(P.series[0].pts.map(q => q[1])); const y = P.refs[0].y; if (!(y >= lo - 3 && y <= hi + 3)) P.refs = []; else P.refs[0].noScale = false; }
+  const vl = [];
+  if (r){ const st = tstate(r.id); for (const k in st.marks){ const x = st.marks[k] - tEnd; if (x >= -WINDOW_S) vl.push({x, label: k === "start" ? r.code + " start" : k}); } }
+  stack(cv, {x0:-WINDOW_S, x1:0, ph:62, panels, vlines:vl, xLabel:"seconds before now, m:ss"});
+}
+function showAlert(msg){ $("alert").textContent = msg; }
+
+// ---------- saving ----------
+async function saveCsv(name, text){
+  if (window.showSaveFilePicker){
+    try {
+      const h = await showSaveFilePicker({suggestedName:name, types:[{description:"CSV", accept:{"text/csv":[".csv"]}}]});
+      const wr = await h.createWritable(); await wr.write(text); await wr.close(); return;
+    } catch(e){ if (e.name === "AbortError") return; }
+  }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], {type:"text/csv"})); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+const today = () => new Date().toLocaleDateString("en-CA");
+const q = s => /[",\n]/.test(String(s)) ? `"${String(s).replace(/"/g,'""')}"` : String(s ?? "");
+const rawCsv = rs => "clock,t_epoch,ms,tempC,rh,hPa,uvi,soil\n" + rs.map(r => [r.clock, r.t.toFixed(2), r.ms, r.tempC, r.rh, r.hPa, r.uvi, r.soil].join(",")).join("\n") + "\n";
+
+// ---------- autopilot ----------
+/* Runs the same tests as the cards, but drives the Start / Mark / Finish buttons itself.
+   Each test is a script of steps:
+     {do:"start" | "mark" | "refresh" | "finish"}   happens at once
+     {hold:s}       wait s seconds of data (hands off)
+     {until:fn}     wait until fn(c) is true, or max seconds pass (hands off)
+     {act:true}     needs the person: chime + voice + notification. Done or a detector completes it,
+                    and if it has a key, the mark lands at the detected onset or the Done press.
+   The analysis code in TESTS is untouched: the autopilot only fills in the same marks a person would. */
+const SCALE = Math.max(1, Number(new URLSearchParams(location.search).get("fast")) || 1);   // ?fast=10 shortens waits, for rehearsal only
+const sec = s => s/SCALE;
+const ORDER = ["link","noise","breath","soil","stairs","outdoor","sun","uv","soak"];   // desk tests first, then walk out once
+const isSettled = () => settleT().state === "settled";
+const sinceMark = (c, k) => { const t = tstate(c.id).marks[k]; return t == null ? 0 : (latestT() ?? 0) - t; };
+const soilAbsent = () => { const r = recent(10); return r.length > 5 && r.every(x => x.soil < 0); };
+
+const AUTO = {
+  link:{steps:[
+    {do:"start"},
+    {hold:65, say:"Checking the link. Leave it alone for a minute."},
+    {do:"finish"}]},
+  noise:{steps:[
+    {act:true, short:"Set it on a quiet desk", say:"Set the module on a quiet desk away from vents, windows, lamps and the laptop's exhaust, then press Done and step back."},
+    {until:isSettled, max:900, why:"temperature settling", say:"Waiting for the temperature to settle before the noise run. Hands off."},
+    {do:"start"},
+    {hold:315, say:"Measuring the noise floor for 5 minutes. Don't touch it or breathe near it."},
+    {do:"finish"}]},
+  breath:{steps:[
+    {until:isSettled, max:900, why:"temperature settling", say:"Waiting for the temperature to settle. Hands off."},
+    {do:"start"}, {do:"mark", key:"base"},
+    {hold:30, say:"Recording a 30 second baseline. Keep still."},
+    {act:true, key:"breath", short:"Breathe on it now", speak:"Breathe on the sensor now. One slow breath.", detect:{type:"breath"},
+     say:"From about 5 cm, breathe one slow breath (about 3 s) across the BME280. It spots the breath by itself; no button needed."},
+    {hold:125, say:"Got it. Step back while it recovers for 2 minutes."},
+    {do:"finish"}]},
+  soil:{skipIf:soilAbsent, skipWhy:"STEMMA soil sensor not plugged in (the board reports soil -1)", steps:[
+    {do:"start"},
+    {act:true, key:"air", short:"Soil sensor in open air", say:"Hold the soil sensor in open air, touching nothing, and press Done."},
+    {hold:22, say:"Hold it in the air."},
+    {act:true, key:"dry", short:"Into the dry soil", detect:{type:"shift", f:"soil", min:25, sd:15}, say:"Push it into the dry soil up to the white line. Never past the line."},
+    {hold:22, say:"Hold it in the soil."},
+    {act:true, key:"w1", short:"Into the water", detect:{type:"shift", f:"soil", min:150, dir:1, sd:15}, say:"Wipe it off and put it in the water up to the line."},
+    {hold:22, say:"Hold it in the water."},
+    {act:true, key:"w2", short:"Out, shake, back in", detect:{type:"dip", f:"soil", min:200, tol:40, sd:15}, say:"Pull it out, shake it, and put it back in the water."},
+    {hold:22, say:"Hold it in the water."},
+    {act:true, key:"w3", short:"Once more", detect:{type:"dip", f:"soil", min:200, tol:40, sd:15}, say:"Once more: out, shake, back in."},
+    {hold:22, say:"Hold it in the water."},
+    {act:true, key:"air2", short:"Dry it, hold in air", detect:{type:"shift", f:"soil", min:150, dir:-1, sd:15}, say:"Dry it with the towel and hold it in open air."},
+    {hold:22, say:"Hold it in the air."},
+    {do:"finish"}]},
+  stairs:{steps:[
+    {act:true, short:"Go to the stairs", say:"Take the laptop and module to the bottom of a stairwell. Press Done when you're there."},
+    {do:"start"}, {do:"mark", key:"g0"},
+    {hold:32, say:"Hold the module still at chest height."},
+    {act:true, key:"f1", short:"Up one floor", detect:{type:"shift", f:"hPa", min:0.2, dir:-1, sd:0.05, stable:5}, say:"Walk up one floor and hold it at the same chest height. It notices when you stop."},
+    {hold:32, say:"Hold still."},
+    {act:true, key:"f2", optional:true, short:"One more floor, or skip", detect:{type:"shift", f:"hPa", min:0.2, dir:-1, sd:0.05, stable:5}, say:"Optional: up one more floor. Press Skip to go straight back down instead."},
+    {hold:32, ifMark:"f2", say:"Hold still."},
+    {act:true, key:"g1", short:"Back down to the ground", detect:{type:"level", f:"hPa", ref:"g0", tol:0.1, sd:0.05, stable:5}, say:"Walk back down to where you started, same chest height."},
+    {hold:32, say:"Hold still."},
+    {do:"finish"}]},
+  outdoor:{steps:[
+    {act:true, short:"Set up the long cable", say:"Outdoor test next. Plug in the 2 m+ cable and park the laptop by a door. Module stays on the desk inside for now. Press Done when ready."},
+    {until:isSettled, max:900, why:"indoor temperature settling", say:"Waiting for the indoor temperature to settle. Hands off."},
+    {do:"refresh"}, {do:"start"}, {do:"mark", key:"in"},
+    {hold:62, say:"Recording indoors for a minute. Keep still."},
+    {act:true, key:"out", short:"Go outside now", speak:"Time to go outside. Put the module in the shade and press Done when you set it down.",
+     detect:{type:"departT", after:180},
+     say:"Take it outside into open shade, about 1 m up (a chair), away from walls, cars and pavement, at the full cable length from the laptop and from you. Press Done the moment you set it down."},
+    {until:c => sinceMark(c, "out") >= sec(900) && isSettled(), max:2700, why:"a settled temperature",
+     say:"Leave it outside. Stay back and downwind; I'll call you if anything is needed. 15 minutes minimum, then it waits for Settled.",
+     sub:c => { const left = sec(900) - sinceMark(c, "out"); return left > 0 ? `${fmtDur(left)} until the 15 min minimum` : `waiting for Settled (${settleT().slope != null ? sgn(settleT().slope,2) + " C/min" : "need 2 min of data"})`; }},
+    {do:"mark", key:"read"},
+    {hold:62, say:"Taking the outdoor reading. Keep away from it."},
+    {do:"refresh"}, {do:"finish"}]},
+  sun:{steps:[
+    {act:true, short:"Module into shade outside", say:"Sun test. Put the module outside in open shade, about 1 m up, and press Done when it's set down."},
+    {do:"start"},
+    {until:c => sinceMark(c, "start") >= sec(120) && isSettled(), max:1200, why:"a settled shade temperature", say:"Letting it settle in the shade. Hands off."},
+    {do:"mark", key:"shade"},
+    {hold:62, say:"Recording the shade temperature."},
+    {act:true, key:"sun", short:"Into the sun", detect:{type:"shift", f:"uvi", min:0.5, rel:0.5, dir:1}, say:"Move it into direct sun at the same height. It notices the sun on its own."},
+    {until:c => sinceMark(c, "sun") >= sec(300) && isSettled(), max:1200, why:"a settled sun temperature",
+     say:"Leave it in the sun. 5 minutes minimum, then it waits for Settled.",
+     sub:c => { const left = sec(300) - sinceMark(c, "sun"); return left > 0 ? `${fmtDur(left)} until the 5 min minimum` : "waiting for Settled"; }},
+    {do:"mark", key:"sunread"},
+    {hold:62, say:"Taking the sun reading."},
+    {do:"finish"}]},
+  uv:{steps:[
+    {act:true, short:"Module inside, away from windows", say:"UV test. Bring the module inside, away from windows, and press Done."},
+    {do:"start"}, {do:"mark", key:"indoor"},
+    {hold:32, say:"Recording indoors."},
+    {act:true, key:"shade", short:"Outside in shade", detect:{type:"shift", f:"uvi", min:0.1, dir:1}, say:"Take it outside into open shade: sky visible, no direct sun on the sensor."},
+    {hold:32, say:"Hold it in the shade."},
+    {act:true, key:"sun", short:"Into direct sun", detect:{type:"shift", f:"uvi", min:0.3, rel:0.4, dir:1}, say:"Into direct sun, sensor face pointing straight up."},
+    {hold:32, say:"Hold it in the sun."},
+    {act:true, key:"cover", short:"Cover it with your hand", detect:{type:"below", f:"uvi", max:0.05, stable:3}, say:"Cover the sensor completely with your hand."},
+    {hold:17, say:"Keep it covered."},
+    {do:"finish"}]},
+  soak:{steps:[
+    {act:true, short:"Set up the soak run", say:"Soak run. Put the module outside somewhere sheltered from sun and rain, laptop on its charger. Press Done. The screen is kept awake for you."},
+    {do:"start"},
+    {until:() => { const m = TBY.soak.analyze(ctxFor(TBY.soak)).metrics; return m[0].ok && m[1].ok; }, max:4*3600, why:"3 station observations",
+     say:"Soak running. Leave everything alone; it finishes on its own after 60 min and 3 station observations (usually about 3 hours).",
+     sub:c => `${fmtDur(sinceMark(c, "start"))} so far`},
+    {do:"finish"}]},
+};
+
+// Detectors watch the stream and return the moment the physical step happened, or null.
+const lvl = (f, a, b) => { const s = fstat(rows, f, a, b); return s.n >= 4 ? s : null; };
+// The "before" level for a detector: the last 10 s before the prompt, but never reaching back past
+// the previous mark (+3 s), so it only sees the settled previous phase and not the move into it.
+function refLvl(f, t0, c){
+  let prev = -Infinity; for (const t of Object.values(tstate(c.id).marks)) if (t <= t0 && t > prev) prev = t;
+  return lvl(f, Math.min(Math.max(t0 - 10, prev + 3), t0 - 1.5), t0);
+}
+function stableWin(f, st){ const end = latestT(); return end == null ? null : Object.assign(fstat(rows, f, end - st, end), {a:end - st}); }
+const DET = {
+  // humidity jumps 3+ points over the 25 s before the prompt; back-date to where the rise began
+  breath(t0){
+    const b = lvl("rh", t0 - 25, t0);
+    return () => {
+      if (!b) return null;
+      const rs = inWin(rows, t0, Infinity), hit = rs.findIndex(r => r.rh >= b.mean + 3);
+      if (hit < 0) return null;
+      let i = hit; while (i > 0 && rs[i-1].rh > b.mean + 0.5) i--;
+      return rs[i].t;
+    };
+  },
+  // the reading has moved to a new, steady level compared with the 10 s before the prompt
+  shift(t0, o, c){
+    const ref = refLvl(o.f, t0, c), st = o.stable || 4;
+    return () => {
+      if (!ref || latestT() - t0 < st) return null;
+      const w = stableWin(o.f, st); if (w.n < 4) return null;
+      const d = w.mean - ref.mean, need = Math.max(o.min, (o.rel || 0)*Math.abs(ref.mean));
+      const sdMax = o.sd ?? Math.max(o.min/2, 0.15*Math.abs(w.mean));
+      return (o.dir ? d*o.dir : Math.abs(d)) >= need && w.sd <= sdMax ? w.a : null;
+    };
+  },
+  // back near the level recorded at an earlier mark (stairs: back on the ground floor)
+  level(t0, o, c){
+    // the reference phase runs from its mark to the next mark; skip its first few seconds of settling
+    const marks = tstate(c.id).marks, m = marks[o.ref], st = o.stable || 5;
+    const next = m == null ? null : nextMark(marks, m), ref = m == null ? null : lvl(o.f, m + Math.min(8, (next - m)/4), Math.min(m + 28, next - 1));
+    return () => {
+      if (!ref || latestT() - t0 < st) return null;
+      const w = stableWin(o.f, st); if (w.n < 4) return null;
+      return Math.abs(w.mean - ref.mean) <= o.tol && w.sd <= o.sd ? w.a : null;
+    };
+  },
+  // left the level, then came back to it (soil: out of the water and back in)
+  dip(t0, o, c){
+    const ref = refLvl(o.f, t0, c); let out = false;
+    return () => {
+      if (!ref) return null;
+      const last = rows[rows.length-1];
+      if (last && last[o.f] >= 0 && Math.abs(last[o.f] - ref.mean) >= o.min) out = true;
+      if (!out) return null;
+      const w = stableWin(o.f, 3); if (w.n < 4) return null;
+      return Math.abs(w.mean - ref.mean) <= o.tol && w.sd <= o.sd ? w.a : null;
+    };
+  },
+  below(t0, o){
+    const st = o.stable || 3;
+    return () => { if (latestT() - t0 < st) return null; const w = stableWin(o.f, st); return w.n >= 4 && w.max <= o.max ? w.a : null; };
+  },
+  // carried outside: temperature or humidity has clearly left the indoor value. Only a fallback,
+  // used if Done was not pressed within `after` seconds, because Done marks the set-down moment exactly.
+  departT(t0, o){
+    const T = lvl("tempC", t0 - 20, t0), H = lvl("rh", t0 - 20, t0);
+    return () => {
+      if (!T || !H || latestT() - t0 < sec(o.after || 0)) return null;
+      const w = stableWin("tempC", 3), h = stableWin("rh", 3);
+      if (!(Math.abs(w.mean - T.mean) >= 1 || Math.abs(h.mean - H.mean) >= 6)) return null;
+      const r = rows.find(r => r.t > t0 && (Math.abs(r.tempC - T.mean) > 0.2 || Math.abs(r.rh - H.mean) > 1.5));
+      return r ? r.t : w.a;
+    };
+  },
+};
+
+const AP = {on:false, paused:false, queue:[], ran:[], cur:null, log:[], msg:"", waitAlerted:false};
+function apLog(text){
+  AP.log.push(`${new Date().toLocaleTimeString([], {hour:"numeric", minute:"2-digit", second:"2-digit"})}  ${text}`);
+  if (AP.log.length > 300) AP.log = AP.log.slice(-300);
+}
+
+// --- getting the person's attention: chime, voice, Mac notification, tab title ---
+let actx = null, lastNote = null, titleFlash = null;
+function unlockAudio(){ try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); actx.resume(); } catch(e){} }
+function chime(){
+  if (!S.session.sound || !actx) return;
+  const t = actx.currentTime;
+  [[880, 0], [1320, 0.18]].forEach(([f, dt]) => {
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.frequency.value = f; o.connect(g); g.connect(actx.destination);
+    g.gain.setValueAtTime(0.0001, t + dt); g.gain.exponentialRampToValueAtTime(0.25, t + dt + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + dt + 0.35);
+    o.start(t + dt); o.stop(t + dt + 0.4);
+  });
+}
+function speak(text){
+  if (!S.session.voice || !window.speechSynthesis) return;
+  speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+}
+function alertMe(short, long, spoken){
+  chime(); speak(spoken || short);
+  try {
+    if (lastNote) lastNote.close();
+    if ("Notification" in window && Notification.permission === "granted"){
+      lastNote = new Notification("Weather lab: " + short, {body:long || "", tag:"wxlab", renotify:true, requireInteraction:true});
+      lastNote.onclick = () => { window.focus(); lastNote && lastNote.close(); };
+    }
+  } catch(e){}
+  clearInterval(titleFlash); let on = false;
+  titleFlash = setInterval(() => { document.title = (on = !on) ? `(!) ${short}` : "Weather Module Lab"; }, 1000);
+}
+function quietAlerts(){ clearInterval(titleFlash); titleFlash = null; document.title = "Weather Module Lab"; try { lastNote && lastNote.close(); } catch(e){} lastNote = null; }
+let wakeLock = null;
+async function keepAwake(on){
+  try {
+    if (on && !wakeLock && navigator.wakeLock){ wakeLock = await navigator.wakeLock.request("screen"); wakeLock.addEventListener("release", () => { wakeLock = null; }); }
+    else if (!on && wakeLock){ await wakeLock.release(); wakeLock = null; }
+  } catch(e){}
+}
+
+// --- sun gating ---
+function sunNeed(id){ return id === "sun" ? {uv:1.5, cloud:70} : {uv:1, cloud:100}; }
+function nextSun(need){
+  const h = W.model && W.model.hourly; if (!h) return null;
+  for (let i = 0; i < h.time.length; i++){
+    const t = Date.parse(h.time[i]);
+    if (t >= Date.now() - 30*60e3 && h.uvi[i] >= need.uv && h.cloud[i] <= need.cloud)
+      return `${new Date(t).toLocaleString([], {weekday:"short", hour:"numeric"})} (UV ${num(h.uvi[i],1)}, ${h.cloud[i]}% cloud)`;
+  }
+  return null;
+}
+function gate(id){
+  if (TBY[id].needs !== "daylight") return {ok:true};
+  const m = W.model, need = sunNeed(id);
+  if (!m) return {ok:false, why:"no forecast yet"};
+  if (m.isDay && m.uvi >= need.uv && m.cloud <= need.cloud) return {ok:true};
+  return {ok:false, why:`needs UV ${need.uv}+${need.cloud < 100 ? ` and under ${need.cloud}% cloud` : ""}, now ${m.isDay ? `UV ${num(m.uvi,1)}, ${m.cloud}% cloud` : "the sun is down"}`, next:nextSun(need)};
+}
+
+// --- what needs testing ---
+const cfgName = c => c === "bare" ? "bare boards" : "the enclosure";
+const fmtV = m => m.v == null ? "--" : typeof m.v === "string" ? m.v : m.v.toFixed(m.d) + (m.unit || "");
+function flagOf(id){
+  const st = tstate(id), res = st.result || [];
+  if (id === "soak" && !S.session.soak && st.status === "idle") return null;
+  if (st.status === "pass") return st.frozen && st.frozen.config !== S.session.config ? {kind:"Config changed", why:`Passed with ${cfgName(st.frozen.config)}; the session is now set to ${cfgName(S.session.config)}.`} : null;
+  if (st.status === "fail") return {kind:"Failed", why:res.filter(m => m.lim && m.ok === false).map(m => `${m.k}: ${fmtV(m)}, needs ${m.lim}`).join(". ") + "."};
+  if (st.status === "incomplete") return {kind:"Incomplete", why:"No value for: " + res.filter(m => m.lim && m.ok == null).map(m => m.k).join(", ") + "."};
+  if (st.status === "skipped") return {kind:"Skipped", why:st.skipWhy || "Skipped by hand."};
+  if (st.status === "idle") return {kind:"Not run", why:"No result yet."};
+  return null;
+}
+function flagged(){ return ORDER.filter(id => flagOf(id)); }
+function renderRetest(){
+  const ids = flagged();
+  $("rtAll").disabled = !ids.length;
+  $("rtTable").innerHTML = !ids.length ? `<tr><td class="l">Everything has passed in the current configuration. Nothing to run.</td></tr>`
+    : "<tr><th>Test</th><th>State</th><th style='text-align:left'>Why</th><th></th></tr>" + ids.map(id => {
+      const d = TBY[id], f = flagOf(id), g = gate(id);
+      const sun = g.ok ? "" : ` <span class="need">Waits for sun: ${esc(g.why)}${g.next ? `. Next good window ${esc(g.next)}` : ""}.</span>`;
+      const col = f.kind === "Failed" ? "--bad" : f.kind === "Not run" ? "--muted" : "--warn";
+      return `<tr><td class="l"><b>${d.code}</b> ${esc(d.title)}</td><td><span class="dot" style="background:var(${col})"></span> ${f.kind}</td><td class="l small">${esc(f.why)}${sun}</td><td><button data-rt="${id}">Retest</button></td></tr>`;
+    }).join("");
+}
+
+// --- running it ---
+function apStart(ids){
+  unlockAudio(); keepAwake(true);
+  try { if ("Notification" in window && Notification.permission === "default") Notification.requestPermission(); } catch(e){}
+  ids = ORDER.filter(id => ids.includes(id));
+  if (!ids.length){ AP.msg = "Nothing needs testing."; renderAP(); return; }
+  Object.assign(AP, {on:true, paused:false, queue:ids, ran:[], cur:null, waitAlerted:false});
+  apLog(`Autopilot started: ${ids.map(id => TBY[id].code).join(", ")}${SCALE > 1 ? ` (fast x${SCALE}: rehearsal only, results not valid)` : ""}`);
+  apTick();
+}
+function apAdd(ids){
+  if (!AP.on) return apStart(ids);
+  for (const id of ids) if (!AP.queue.includes(id) && !(AP.cur && AP.cur.id === id)) AP.queue.push(id);
+  AP.queue = ORDER.filter(id => AP.queue.includes(id));
+  apLog(`Added ${ids.map(id => TBY[id].code).join(", ")}`); renderAP();
+}
+function apStop(){
+  const c = AP.cur;
+  if (c && c.started && tstate(c.id).status === "running"){
+    if (!confirm(`Stop the autopilot? ${TBY[c.id].code} is mid-run; its data so far is thrown away.`)) return;
+    S.tests[c.id] = {status:"idle", marks:{}, checks:{}, notes:tstate(c.id).notes || ""}; save();
+  }
+  Object.assign(AP, {on:false, paused:false, queue:[], cur:null}); apLog("Autopilot stopped");
+  quietAlerts(); keepAwake(false); updateAll(); renderAP();
+}
+function apAbortTest(){
+  const c = AP.cur; if (!c) return;
+  if (c.started && !confirm(`Abort ${TBY[c.id].code}? Its data so far is thrown away and it stays on the Needs testing list.`)) return;
+  S.tests[c.id] = {status:"idle", marks:{}, checks:{}, notes:tstate(c.id).notes || ""}; save();
+  apLog(`${TBY[c.id].code} aborted`); AP.ran.push(c.id); AP.cur = null; quietAlerts(); updateAll(); apTick();
+}
+let apLast = 0;
+function apPulse(){ const n = Date.now(); if (n - apLast > 400){ apLast = n; apTick(); } }
+
+function apTick(){
+  if (!AP.on || AP.paused){ renderAP(); return; }
+  const c = AP.cur;
+  if (c){
+    if (c.started && tstate(c.id).status !== "running"){ apFinished(c.id); return; }   // finished or reset by hand on its card
+    if (!liveData()){
+      AP.msg = "No data from the board. Check the cable, then reconnect.";
+      if (!c.lost){ c.lost = true; alertMe("Lost the board", "No data for 3 s. Check the USB cable."); apLog("Lost the data stream"); }
+      renderAP(); return;
+    }
+    if (c.lost){ c.lost = false; apLog("Data back"); }
+    AP.msg = "";
+    stepLoop(); renderAP(); return;
+  }
+  if (!AP.queue.length){ apAllDone(); return; }
+  if (!liveData()){ AP.msg = "Waiting for data: connect the board (or start Fake data)."; renderAP(); return; }
+  const r = running();
+  if (r){ AP.msg = `${r.code} is running by hand. Finish or reset it on its card and the autopilot carries on.`; renderAP(); return; }
+  const id = AP.queue.find(id => gate(id).ok);
+  if (!id){
+    const g = gate(AP.queue[0]), codes = AP.queue.map(id => TBY[id].code).join(" and ");
+    AP.msg = `${codes} ${AP.queue.length > 1 ? "need" : "needs"} sun: ${g.why}. ${g.next ? `Next good window: ${g.next}.` : "No good window in the 3-day forecast."} Leave this tab open and it calls you when the sun is up, or press Stop and come back.`;
+    if (!AP.waitAlerted){ AP.waitAlerted = true; alertMe("Waiting for sun", AP.msg, "The rest of the tests need sun. I'll call you when it's out."); apLog(`Waiting for sun (${g.why})`); }
+    renderAP(); return;
+  }
+  AP.queue = AP.queue.filter(x => x !== id);
+  const A = AUTO[id];
+  if (A.skipIf && A.skipIf()){
+    Object.assign(tstate(id), {status:"skipped", skipWhy:A.skipWhy}); save();
+    apLog(`${TBY[id].code} skipped: ${A.skipWhy}`); AP.ran.push(id); updateAll(); apTick(); return;
+  }
+  AP.waitAlerted = false; AP.msg = "";
+  AP.cur = {id, i:0, started:false};
+  apLog(`${TBY[id].code} ${TBY[id].title}: begin`);
+  enterStep(); stepLoop(); renderAP();
+}
+function enterStep(){
+  const c = AP.cur, s = AUTO[c.id].steps[c.i]; if (!s) return;
+  c.t0 = latestT(); c.doneAt = null; c.skip = false; c.alertedAt = Date.now();
+  c.det = s.detect ? DET[s.detect.type](c.t0, s.detect, c) : null;
+  quietAlerts();
+  if (s.act) alertMe(s.short, s.say, s.speak);
+}
+function setMark(c, key, t, how){
+  tstate(c.id).marks[key] = t; save(); updateCard(c.id);
+  apLog(`${TBY[c.id].code}: ${key} marked ${how}`);
+}
+function stepLoop(){
+  for (let guard = 0; guard < 30; guard++){
+    const c = AP.cur; if (!c) return;
+    const steps = AUTO[c.id].steps;
+    if (c.i >= steps.length){ apFinished(c.id); return; }
+    const s = steps[c.i], now = latestT(), el = now - c.t0;
+    let done = false;
+    if (s.do === "start"){
+      const r = running(); if (r && r.id !== c.id){ AP.msg = `${r.code} is running by hand; waiting for it.`; return; }
+      Object.assign(tstate(c.id), {status:"running", marks:{start:now}, frozen:null, result:null, auto:true, skipWhy:null});
+      c.started = true; save(); updateAll(); done = true;
+    }
+    else if (s.do === "mark"){ setMark(c, s.key, now, "automatically"); done = true; }
+    else if (s.do === "refresh"){
+      if (!c.fetching){ c.fetching = fetchWeather().catch(() => {}).then(() => { c.fetched = true; }); }
+      done = !!c.fetched; if (done){ c.fetching = null; c.fetched = false; }
+    }
+    else if (s.do === "finish"){ finishTest(c.id); done = true; }
+    else if (s.hold != null){ done = (s.ifMark && tstate(c.id).marks[s.ifMark] == null) || el >= sec(s.hold); }
+    else if (s.until){
+      if (s.until(c)) done = true;
+      else if (s.max && el >= sec(s.max)){ done = true; apLog(`${TBY[c.id].code}: moved on after ${Math.round(sec(s.max)/60)} min without ${s.why}`); }
+    }
+    else if (s.act){
+      if (c.skip && s.optional){ done = true; apLog(`${TBY[c.id].code}: step skipped`); }
+      else if (c.doneAt != null){ if (s.key) setMark(c, s.key, c.doneAt, "on Done"); done = true; }
+      else if (c.det){ const t = c.det(); if (t != null){ if (s.key) setMark(c, s.key, t, "by detection"); done = true; } }
+      // still waiting on the person: nudge every 3 minutes
+      if (!done && Date.now() - c.alertedAt > 180e3){ c.alertedAt = Date.now(); alertMe("Still waiting: " + s.short, s.say); }
+    }
+    if (!done) return;
+    if (s.act) quietAlerts();
+    c.i++; enterStep();
+  }
+}
+function apFinished(id){
+  const st = tstate(id), d = TBY[id];
+  AP.cur = null; AP.ran.push(id);
+  const f = flagOf(id);
+  if (st.status === "pass"){ apLog(`${d.code} PASS`); chime(); speak(`${d.code} passed.`); }
+  else { apLog(`${d.code} ${st.status.toUpperCase()}: ${f ? f.why : ""}`); alertMe(`${d.code} ${st.status}`, f ? f.why : "", `${d.code} ${st.status === "fail" ? "failed" : "is incomplete"}. It's on the retest list.`); }
+  autosave("test finished");
+  updateAll(); apTick();
+}
+function apAllDone(){
+  const left = flagged();
+  Object.assign(AP, {on:false, cur:null});
+  const msg = left.length ? `Done. ${left.length} still ${left.length > 1 ? "need" : "needs"} testing: ${left.map(id => TBY[id].code).join(", ")}. See Needs testing.` : "Done. Every test passed. You can bring the module in.";
+  AP.msg = msg; apLog("Autopilot finished. " + msg);
+  alertMe("Autopilot finished", msg, left.length ? `All done. ${left.length} ${left.length > 1 ? "tests need" : "test needs"} a retest.` : "All done. Every test passed.");
+  autosave("autopilot finished"); keepAwake(false); renderAP();
+}
+
+function renderAP(){
+  const c = AP.cur, s = c ? AUTO[c.id].steps[c.i] : null, d = c ? TBY[c.id] : null;
+  const you = AP.on && !AP.paused && !!(s && s.act);
+  $("apPanel").classList.toggle("you", you);
+  $("apFast").textContent = SCALE > 1 ? `FAST x${SCALE}: rehearsal, results not valid` : "";
+  $("apTag").textContent = !AP.on ? "Idle" : AP.paused ? "Paused" : you ? "Your turn" : c ? "Hands off" : "Waiting";
+  $("apKicker").textContent = c ? `${d.code} · ${d.title} · step ${c.i + 1} of ${AUTO[c.id].steps.length}` : AP.on ? `${AP.queue.length} test${AP.queue.length === 1 ? "" : "s"} queued` : "";
+  const n = flagged().length;
+  $("apSay").textContent = AP.msg || (s ? s.say || "Working..." : AP.on ? "Working..." :
+    `Connect the board, then press Start autopilot. It runs the ${n} test${n === 1 ? "" : "s"} under Needs testing, tells you when to move the module, and saves everything to bench/runs/.`);
+  let sub = "";
+  if (c && s && AP.on){
+    const el = (latestT() ?? c.t0) - c.t0;
+    if (s.hold != null) sub = `${fmtDur(Math.max(0, sec(s.hold) - el))} left`;
+    else if (s.until) sub = s.sub ? s.sub(c) : `waiting ${fmtDur(el)}${s.max ? ` (moves on after ${Math.round(sec(s.max)/60)} min)` : ""}`;
+    else if (s.act) sub = s.detect ? (s.detect.after ? `Press Done when it's set down (auto-detects after ${Math.round(sec(s.detect.after)/60)} min if you forget)` : "Watching for it, or press Done") : "Press Done when you've done it";
+    if (c.started && tstate(c.id).status === "running") sub += `  ·  test clock ${fmtDur((latestT() ?? 0) - tstate(c.id).marks.start)}`;
+  }
+  $("apSub").textContent = sub;
+  $("apDone").classList.toggle("hidden", !you);
+  $("apSkip").classList.toggle("hidden", !(you && s.optional));
+  $("apAbort").classList.toggle("hidden", !(AP.on && c));
+  $("apStartBtn").classList.toggle("hidden", AP.on);
+  $("apStartBtn").disabled = !n;
+  $("apPauseBtn").classList.toggle("hidden", !AP.on);
+  $("apPauseBtn").textContent = AP.paused ? "Resume" : "Pause";
+  $("apStopBtn").classList.toggle("hidden", !AP.on);
+  const chip = (id, cls) => { const [label, col] = STATUS[tstate(id).status]; return `<li class="${cls}"><span class="dot" style="background:var(${col})"></span><b>${TBY[id].code}</b> ${cls === "cur" ? "now" : cls === "q" ? "queued" : label}</li>`; };
+  const html = AP.ran.map(id => chip(id, "")).join("") + (c ? chip(c.id, "cur") : "") + AP.queue.map(id => chip(id, "q")).join("");
+  if ($("apPlan")._h !== html){ $("apPlan").innerHTML = html; $("apPlan")._h = html; }
+  const lg = AP.log.slice().reverse().join("\n");
+  if ($("apLog")._h !== lg){ $("apLog").textContent = lg; $("apLog")._h = lg; }
+}
+
+// ---------- export for analysis ----------
+// One JSON file per page session, overwritten as it grows, so bench/runs/ does not fill with copies.
+const SESSION_ID = new Date().toLocaleString("sv-SE").slice(0, 16).replace(":", "").replace("T", " ");
+function buildExport(){
+  const cols = ["t_epoch","ms","tempC","rh","hPa","uvi","soil"], pack = rs => rs.map(r => [+r.t.toFixed(2), r.ms, r.tempC, r.rh, r.hPa, r.uvi, r.soil]);
+  return {
+    format:"wxlab-export/1", note:"Weather module lab export. Marks are epoch seconds; each test's rows are the frozen data its result was computed from.",
+    exportedAt:new Date().toISOString(), sessionStarted:SESSION_ID, source, fastScale:SCALE,
+    session:S.session, elevation:elevNow(), referenceNow:refNow(),
+    tests:TESTS.map(d => {
+      const st = tstate(d.id), f = st.frozen, flag = flagOf(d.id);
+      return {code:d.code, id:d.id, title:d.title, status:st.status, finishedAt:st.finishedAt || null, byAutopilot:!!st.auto,
+              needsTesting:flag ? flag.kind + ": " + flag.why : null, configuration:f ? f.config : null, notes:st.notes || "",
+              marks:st.marks, marksRelative:Object.fromEntries(Object.entries(st.marks).map(([k, t]) => [k, +(t - (st.marks.start ?? t)).toFixed(1)])),
+              criteria:d.criteria, metrics:st.result || null, reference:f ? f.ref : null, elevationUsed:f ? f.elev : null, unreadableLines:f ? f.bad.length : null,
+              data:f ? {columns:cols, rows:pack(f.rows)} : null};
+    }),
+    stationLog:S.wlog, autopilotLog:AP.log,
+    rawStream:{columns:cols, rows:pack(rows), unreadableLineTimes:badLines},
+  };
+}
+async function postSave(name, text){
+  try {
+    const r = await fetch("/save?name=" + encodeURIComponent(name), {method:"POST", headers:{"Content-Type":"application/json"}, body:text});
+    if (r.ok) return (await r.json()).saved;
+  } catch(e){}
+  return null;
+}
+let lastAutosaveRows = 0;
+async function autosave(why, manual){
+  if (!manual && source !== "serial") return;      // fake runs only save when asked
+  const name = `${SESSION_ID} lab session${source === "fake" ? " FAKE" : ""}.json`, text = JSON.stringify(buildExport());
+  const p = await postSave(name, text);
+  if (p){ lastAutosaveRows = rows.length; $("saveStatus").textContent = `Saved ${p} at ${new Date().toLocaleTimeString([], {hour:"numeric", minute:"2-digit"})}`; return p; }
+  $("saveStatus").textContent = "Autosave unavailable: open the page with start-lab.command.";
+  if (manual){ const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([text], {type:"application/json"})); a.download = name; a.click(); }
+  return null;
+}
+setInterval(() => { if (source === "serial" && rows.length > lastAutosaveRows + 20) autosave("periodic"); }, 60e3);
+
+// ---------- wiring ----------
+$("apStartBtn").onclick = () => apStart(flagged());
+$("apPauseBtn").onclick = () => { AP.paused = !AP.paused; apLog(AP.paused ? "Paused" : "Resumed"); if (!AP.paused && AP.cur){ enterStep(); } apTick(); };
+$("apStopBtn").onclick = apStop;
+$("apAbort").onclick = apAbortTest;
+$("apDone").onclick = () => { if (AP.cur){ AP.cur.doneAt = latestT(); stepLoop(); renderAP(); } };
+$("apSkip").onclick = () => { if (AP.cur){ AP.cur.skip = true; stepLoop(); renderAP(); } };
+$("rtAll").onclick = () => apAdd(flagged());
+$("btnExportAll").onclick = () => autosave("manual", true);
+$("rtTable").addEventListener("click", e => { const b = e.target.closest("button[data-rt]"); if (b) apAdd([b.dataset.rt]); });
+for (const [id, k] of [["tgSound","sound"], ["tgVoice","voice"], ["tgSoak","soak"]]){
+  $(id).checked = !!S.session[k];
+  $(id).addEventListener("change", () => { S.session[k] = $(id).checked; save(); if (k === "sound" && $(id).checked){ unlockAudio(); chime(); } renderRetest(); renderAP(); });
+}
+document.addEventListener("keydown", e => {
+  if (e.code !== "Space" || /INPUT|TEXTAREA|SELECT|BUTTON/.test(e.target.tagName)) return;
+  if (AP.on && AP.cur && !$("apDone").classList.contains("hidden")){ e.preventDefault(); $("apDone").click(); }
+});
+document.addEventListener("visibilitychange", () => { if (AP.on && document.visibilityState === "visible") keepAwake(true); });
+window.addEventListener("focus", () => { if (titleFlash && !(AP.cur && AUTO[AP.cur.id].steps[AP.cur.i]?.act)) quietAlerts(); });
+$("btnConnect").onclick = connectSerial;
+$("btnFake").onclick = startFake;
+$("btnStop").onclick = disconnect;
+$("btnRefresh").onclick = fetchWeather;
+$("btnPrint").onclick = () => window.print();
+$("btnExportRaw").onclick = () => saveCsv(`${today()} weather lab raw.csv`, rawCsv(rows));
+$("btnExportRes").onclick = () => {
+  const s = S.session, lines = ["test,status,finished,measure,value,unit,limit,result,configuration,station_tempC,station_rh,station_hPa,forecast_uvi,notes"];
+  for (const d of TESTS){
+    const st = tstate(d.id), f = st.frozen, ref = f ? f.ref : {};
+    const common = [f ? (f.config) : s.config, num(ref.tempC,1), num(ref.rh,0), num(ref.alt,1), num(ref.uvi,2), q(st.notes)];
+    if (!st.result) { lines.push([d.code, st.status, "", "", "", "", "", "", ...common].join(",")); continue; }
+    for (const m of st.result) lines.push([d.code, st.status, st.finishedAt, q(m.k), m.v == null ? "" : typeof m.v === "string" ? q(m.v) : m.v.toFixed(m.d), q((m.unit || "").trim()), q(m.lim || ""), !m.lim ? "info" : m.ok == null ? "waiting" : m.ok ? "pass" : "fail", ...common].join(","));
+  }
+  saveCsv(`${today()} weather lab results.csv`, lines.join("\n") + "\n");
+};
+$("btnClearAll").onclick = () => {
+  if (!confirm("Delete every test result and mark in this browser? Save the results CSV first if you want them.")) return;
+  S.tests = {}; save(); updateAll();
+};
+document.addEventListener("click", e => {
+  const b = e.target.closest("button[data-test]"); if (!b) return;
+  const id = b.dataset.test;
+  if (b.dataset.mark) return markTest(id, b.dataset.mark);
+  ({start:startTest, finish:finishTest, reset:resetTest, skip:skipTest,
+    data: id => { const st = tstate(id); if (st.frozen) saveCsv(`${today()} ${TBY[id].code} ${TBY[id].title}.csv`, rawCsv(st.frozen.rows)); }})[b.dataset.act]?.(id);
+});
+document.addEventListener("change", e => {
+  const t = e.target;
+  if (t.dataset && t.dataset.check != null){ tstate(t.dataset.test).checks[t.dataset.check] = t.checked; save(); }
+});
+document.addEventListener("input", e => {
+  const t = e.target;
+  if (t.tagName === "TEXTAREA" && t.dataset.test){ tstate(t.dataset.test).notes = t.value; save(); }
+});
+// session form
+const sessMap = {sTester:"tester", sConfig:"config", sElev:"elev", sStation:"station", sLat:"lat", sLon:"lon"};
+for (const [id, k] of Object.entries(sessMap)){
+  $(id).value = S.session[k] ?? "";
+  $(id).addEventListener("change", () => {
+    const v = $(id).value.trim();
+    S.session[k] = id === "sLat" || id === "sLon" ? Number(v) : id === "sStation" ? v.toUpperCase() : v;
+    save(); if (["sStation","sLat","sLon"].includes(id)) fetchWeather(); else renderWeather();
+  });
+}
+// simulator
+const segPick = (el, key, after) => el.addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  el.querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+  sim[key] = b.dataset.v; after && after(b.dataset.v);
+});
+segPick($("simPlace"), "place");
+segPick($("simSoil"), "soilMode", v => { if (v === "water") sim.soilOff = 6*gauss(); });
+$("simBreath").onclick = () => { sim.bT += 2.6; sim.bRH += 36; };
+$("simCover").onclick = () => { sim.cover = !sim.cover; $("simCover").setAttribute("aria-pressed", String(sim.cover)); };
+$("simUp").onclick = () => { sim.floor++; $("simFloor").textContent = sim.floor; };
+$("simDown").onclick = () => { sim.floor = Math.max(0, sim.floor - 1); $("simFloor").textContent = sim.floor; };
+
+window.addEventListener("beforeunload", e => { if (rows.length > 20){ e.preventDefault(); e.returnValue = ""; } });
+let rz = null;
+new ResizeObserver(() => { clearTimeout(rz); rz = setTimeout(() => { updateAll(); tick(); }, 120); }).observe(document.querySelector("main"));
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { updateAll(); tick(); });
+window.addEventListener("beforeprint", () => updateAll());
+
+buildCards(); renderWeather(); updateAll(); renderAP();
+fetchWeather(); setInterval(fetchWeather, WX_EVERY_MS);
+setInterval(tick, 400); tick();
+// the running test's table and graphs refresh once a second; finished ones only on change
+setInterval(() => { const r = running(); if (r) { updateCard(r.id); renderIndex(); } }, 1000);
+</script>
+</body>
+</html>

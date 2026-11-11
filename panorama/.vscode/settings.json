@@ -1,0 +1,9 @@
+{
+    // Use this folder's own Python (with OpenCV installed), not the system one
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+    "python.terminal.activateEnvironment": true,
+    // The Run button breaks on paths with spaces ("Mars Rover Science") when the
+    // Python Environments extension builds the command: the path gets quoted twice.
+    // false keeps runs on the main Python extension, which quotes it once.
+    "python.useEnvironmentsExtension": false
+}
