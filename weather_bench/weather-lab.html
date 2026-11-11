@@ -235,7 +235,7 @@ label.tg{display:inline-flex;gap:6px;align-items:center;font-size:13px;cursor:po
       <h2 style="margin:0">Needs testing</h2>
       <div class="row">
         <span class="small" id="saveStatus"></span>
-        <button id="btnExportAll">Export for Claude</button>
+        <button id="btnExportAll">Save results now</button>
         <button class="primary" id="rtAll">Run all of these</button>
       </div>
     </div>
@@ -259,14 +259,14 @@ label.tg{display:inline-flex;gap:6px;align-items:center;font-size:13px;cursor:po
   <!-- how to use -->
   <section class="panel">
     <h2>How to run this lab</h2>
-    <p style="margin-top:0">Easiest way: connect the board and press <b>Start autopilot</b>. It runs every test in <i>Needs testing</i> in an order that keeps walking to a minimum, starts and finishes each one itself, and spots breaths, soil dunks, floors and sun on its own. When it needs your hands it chimes, says the instruction out loud and sends a Mac notification; press <b>Done</b> or the space bar once you've done it. Sun tests wait for a forecast UV index of 1 or more. Everything autosaves to <code>bench/runs/</code>.</p>
+    <p style="margin-top:0">Easiest way: connect the board and press <b>Start autopilot</b>. It runs every test in <i>Needs testing</i> in an order that keeps walking to a minimum, starts and finishes each one itself, and spots breaths, soil dunks, floors and sun on its own. When it needs your hands it chimes, says the instruction out loud and sends a Mac notification; press <b>Done</b> or the space bar once you've done it. Sun tests wait for a forecast UV index of 1 or more. Everything autosaves to <code>weather_bench/runs/</code>.</p>
     <p>The cards below still work by hand if you want to drive a test yourself.</p>
     <ul class="small" style="padding-left:18px;margin:0">
       <li><b>Start test</b> stamps the clock. Grey <b>Mark</b> buttons stamp the moment you do each physical step, so press them as you act, not after.</li>
       <li>Only one test runs at a time. <b>Finish</b> freezes the result and its data. <b>Reset</b> clears it to redo.</li>
       <li>Pass limits are bench judgment set from the datasheet and our first runs. Where a limit is the datasheet's own number it says so.</li>
       <li>Conditions refresh every 10 minutes and the station reading is frozen into each test when you finish it.</li>
-      <li>Results stay in this browser across reloads. The raw stream does not: <b>Save raw stream</b> into <code>bench/runs/</code> before closing.</li>
+      <li>Results stay in this browser across reloads. The raw stream does not: <b>Save raw stream</b> into <code>weather_bench/runs/</code> before closing.</li>
       <li>The RS485 probe is not in the board's stream yet, so this lab covers the STEMMA soil sensor only. Calibration lives in <code>soil-cal.html</code>.</li>
     </ul>
   </section>
@@ -367,7 +367,7 @@ let W = {obs:null, model:null, fetchedAt:0};
 let S = loadState();
 
 function defaults(){
-  return {session:{tester:"Coby Maybrook", config:"enclosure", elev:"", station:"KCOU", lat:38.9517, lon:-92.3341,
+  return {session:{tester:"", config:"enclosure", elev:"", station:"KCOU", lat:38.95, lon:-92.33,
                    sound:true, voice:true, soak:false},
           tests:{}, wlog:[]};
 }
@@ -1871,7 +1871,7 @@ function renderAP(){
   $("apKicker").textContent = c ? `${d.code} · ${d.title} · step ${c.i + 1} of ${AUTO[c.id].steps.length}` : AP.on ? `${AP.queue.length} test${AP.queue.length === 1 ? "" : "s"} queued` : "";
   const n = flagged().length;
   $("apSay").textContent = AP.msg || (s ? s.say || "Working..." : AP.on ? "Working..." :
-    `Connect the board, then press Start autopilot. It runs the ${n} test${n === 1 ? "" : "s"} under Needs testing, tells you when to move the module, and saves everything to bench/runs/.`);
+    `Connect the board, then press Start autopilot. It runs the ${n} test${n === 1 ? "" : "s"} under Needs testing, tells you when to move the module, and saves everything to weather_bench/runs/.`);
   let sub = "";
   if (c && s && AP.on){
     const el = (latestT() ?? c.t0) - c.t0;
@@ -1897,7 +1897,7 @@ function renderAP(){
 }
 
 // ---------- export for analysis ----------
-// One JSON file per page session, overwritten as it grows, so bench/runs/ does not fill with copies.
+// One JSON file per page session, overwritten as it grows, so weather_bench/runs/ does not fill with copies.
 const SESSION_ID = new Date().toLocaleString("sv-SE").slice(0, 16).replace(":", "").replace("T", " ");
 function buildExport(){
   const cols = ["t_epoch","ms","tempC","rh","hPa","uvi","soil"], pack = rs => rs.map(r => [+r.t.toFixed(2), r.ms, r.tempC, r.rh, r.hPa, r.uvi, r.soil]);

@@ -5,7 +5,7 @@ Does two jobs:
      Web Serial only works from localhost, not from a file opened in Finder.
   2. Accepts POST /save?name=... and writes the body into runs/. That is what
      lets the page autosave its data to disk without a download dialog, so a
-     later Claude session can read the run straight from bench/runs/.
+     teammate or a script can read the run straight from runs/.
 
 Only plain file names ending in .json or .csv are accepted, only into runs/,
 and only from a page served by this same server (checked with the Origin

@@ -124,7 +124,7 @@ def log_time(label):
 def load_images(folder):
     """Reads every photo in the folder, sorted by name. Gives back (names, images), or None."""
     if not folder.is_dir():
-        print(f"Error: there is no folder at {folder}")
+        print(f"Error: there is no folder at {folder}. Put the photos there or pass --input some_folder.")
         return None
 
     image_files = sorted(
