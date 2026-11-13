@@ -1,0 +1,5 @@
+# Libraries panorama.py needs. Install with:
+#   uv venv .venv && uv pip install -r requirements.txt
+# OpenCV stays on 4.x: 5.0 is out and may rename the stitching functions this script uses.
+opencv-python==4.14.0.94
+numpy==2.5.4

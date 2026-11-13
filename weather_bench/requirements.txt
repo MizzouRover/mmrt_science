@@ -1,0 +1,5 @@
+# Laptop side of the weather bench. bench.py needs nothing; plot.py needs matplotlib.
+# pyserial is only for reading a real board (plot.py --port, log.py).
+# On the Feather itself, CircuitPython libraries come from the Adafruit bundle instead.
+matplotlib>=3.8
+pyserial>=3.5
